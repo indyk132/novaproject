@@ -1547,6 +1547,317 @@ end
 return Pagination
 
 end)() end,
+    [19] = function()local wax,script,require=ImportGlobals(19)local ImportGlobals return (function(...)--[[
+	Session Exporter for Nova
+	Exports logged session data to an HTML file.
+]]
+
+local SessionExporter = {}
+
+function SessionExporter:ProcessCalls(AllCalls, SessionData, UpdateProgress)
+	local Events = {}
+	local StringMap = {}
+	local StringIndex = 0
+
+	local function InternString(str)
+		if not StringMap[str] then
+			StringMap[str] = StringIndex
+			StringIndex += 1
+		end
+		return StringMap[str]
+	end
+
+	local Total = #AllCalls
+	for i, CallData in ipairs(AllCalls) do
+		if UpdateProgress then
+			UpdateProgress(i / Total)
+		end
+
+		local event = {
+			Type = InternString(CallData.Type or "Unknown"),
+			Remote = InternString(CallData.RemoteName or "Unknown"),
+			ClassName = InternString(CallData.ClassName or "Unknown"),
+			Time = CallData.Time or 0,
+			ArgCount = CallData.ArgCount or 0,
+		}
+
+		table.insert(Events, event)
+	end
+
+	return Events, StringMap
+end
+
+function SessionExporter:ExportSessionToHTML(Events, StringMap, SessionData)
+	local ReverseStringMap = {}
+	for str, idx in pairs(StringMap) do
+		ReverseStringMap[idx] = str
+	end
+
+	local eventsJson = wax.shared.HttpService:JSONEncode(Events)
+	local stringMapJson = wax.shared.HttpService:JSONEncode(ReverseStringMap)
+
+	local SessionId = SessionData.SessionId or wax.shared.HttpService:GenerateGUID(false)
+	local StartTime = SessionData.StartTime or 0
+	local EndTime = SessionData.EndTime or tick()
+	local PlaceId = SessionData.PlaceId or game.PlaceId
+	local Duration = string.format("%.1f", EndTime - StartTime)
+
+	local HTML = [[<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nova - Session Viewer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+            background: #0d1117;
+            color: #c9d1d9;
+        }
+        .header {
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+            padding: 12px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .brand {
+            font-weight: 700;
+            font-size: 16px;
+            color: #58a6ff;
+        }
+        .session-info {
+            font-size: 12px;
+            color: #8b949e;
+        }
+        .content {
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .stats {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 16px;
+            flex: 1;
+        }
+        .stat-label {
+            font-size: 11px;
+            color: #8b949e;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #f0f6fc;
+        }
+        .event-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .event-table th {
+            background: #21262d;
+            padding: 8px 12px;
+            text-align: left;
+            font-size: 12px;
+            color: #8b949e;
+            font-weight: 600;
+        }
+        .event-table td {
+            padding: 6px 12px;
+            border-top: 1px solid #21262d;
+            font-size: 13px;
+        }
+        .type-incoming { color: #3fb950; }
+        .type-outgoing { color: #f78166; }
+        .footer {
+            padding: 12px 20px;
+            text-align: center;
+            color: #484f58;
+            font-size: 11px;
+            border-top: 1px solid #30363d;
+            margin-top: 40px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="brand">Nova - Session Viewer</div>
+        <div class="session-info">Session / ]] .. SessionId .. [[</div>
+    </div>
+    <div class="content">
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-label">Total Events</div>
+                <div class="stat-value">]] .. tostring(#Events) .. [[</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Duration</div>
+                <div class="stat-value">]] .. Duration .. [[s</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Place ID</div>
+                <div class="stat-value">]] .. tostring(PlaceId) .. [[</div>
+            </div>
+        </div>
+        <table class="event-table">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Type</th>
+                    <th>Remote</th>
+                    <th>Class</th>
+                    <th>Time</th>
+                    <th>Args</th>
+                </tr>
+            </thead>
+            <tbody id="eventBody"></tbody>
+        </table>
+    </div>
+    <div class="footer">Generated by Nova Remote Spy</div>
+    <script>
+        const events = ]] .. eventsJson .. [[;
+        const stringMap = ]] .. stringMapJson .. [[;
+        const body = document.getElementById('eventBody');
+        events.forEach((e, i) => {
+            const type = stringMap[e.Type] || 'Unknown';
+            const typeClass = type === 'Incoming' ? 'type-incoming' : 'type-outgoing';
+            body.innerHTML += `<tr>
+                <td>${i + 1}</td>
+                <td class="${typeClass}">${type}</td>
+                <td>${stringMap[e.Remote] || 'Unknown'}</td>
+                <td>${stringMap[e.ClassName] || 'Unknown'}</td>
+                <td>${e.Time.toFixed(3)}s</td>
+                <td>${e.ArgCount}</td>
+            </tr>`;
+        });
+    </script>
+</body>
+</html>]]
+
+	return HTML
+end
+
+return SessionExporter
+
+end)() end,
+    [11] = function()local wax,script,require=ImportGlobals(11)local ImportGlobals return (function(...)--[[
+	Nova Spy Initialization
+	Sets up all hooks for monitoring remote events.
+]]
+
+local LuaEncode = require(script.Parent.Parent.Utils.Serializer.LuaEncode)
+local CodeGen = require(script.Parent.Parent.Utils.CodeGen.Generator)
+
+local Hooks = script.Parent.Hooks
+
+-- Main Thread Hooks
+for _, Hook in Hooks.Default:GetChildren() do
+	task.spawn(require, Hook)
+end
+
+getgenv().NovaInitialized = true
+
+-- Actor support
+local ActorsUtils = script.Parent.Actors
+
+wax.shared.ActorsEnabled = (
+	wax.shared.ExecutorSupport["run_on_actor"].IsWorking
+	and wax.shared.ExecutorSupport["getactors"].IsWorking
+	and wax.shared.ExecutorSupport["create_comm_channel"].IsWorking
+)
+
+if wax.shared.ActorsEnabled then
+	local ActorEnvironmentCode = ActorsUtils.Environment.Value
+
+	local IgnorePlayerModule = wax.shared.SaveManager:GetState("IgnorePlayerModule", true)
+	local IgnoredRemotesDropdown = wax.shared.SaveManager:GetState("IgnoredRemotesDropdown", {
+		["BindableEvent"] = true,
+		["BindableFunction"] = true,
+	})
+
+	local AlternativeEnabled = wax.shared.SaveManager:GetState("UseAlternativeHooks", false)
+
+	local CommunicationChannelID, Channel = create_comm_channel()
+	wax.shared.ActorCommunicator = Channel
+
+	local ActorData = LuaEncode({
+		Token = wax.shared.NovaVerificationToken,
+		IgnorePlayerModule = IgnorePlayerModule,
+		IgnoredRemotesDropdown = IgnoredRemotesDropdown,
+		UseAlternativeHooks = AlternativeEnabled,
+		ExecutorSupport = wax.shared.ExecutorSupport,
+	})
+
+	ActorEnvironmentCode = ActorEnvironmentCode:gsub("NOVA_ACTOR_DATA", ActorData)
+
+	-- Actor Logs Sync Layer
+	local function ReconstructTable(Info, CyclicRefs)
+		local Reconstructed = {}
+
+		for Key, Value in Info do
+			if type(Value) == "table" then
+				if Value["__Function"] and Value["Validation"] == wax.shared.NovaVerificationToken then
+					local FunctionData = table.clone(Value)
+					FunctionData["__Function"] = nil
+					FunctionData["Validation"] = nil
+
+					Reconstructed[Key] = FunctionData
+				else
+					Reconstructed[Key] = ReconstructTable(Value, CyclicRefs)
+				end
+			else
+				Reconstructed[Key] = Value
+			end
+		end
+
+		return Reconstructed
+	end
+
+	-- Listen for actor events
+	Channel:Listen("ActorLog", function(RemoteInstance, EventType, CallInfo)
+		if not RemoteInstance or not EventType then
+			return
+		end
+
+		local Log = wax.shared.Logs[EventType][RemoteInstance]
+		if not Log then
+			Log = wax.shared.Log and wax.shared.Log.new(RemoteInstance, EventType, CallInfo.Method, nil, nil)
+			if Log then
+				wax.shared.Logs[EventType][RemoteInstance] = Log
+			end
+		end
+
+		if Log then
+			local ReconstructedInfo = ReconstructTable(CallInfo, {})
+			Log:Call(ReconstructedInfo)
+		end
+	end)
+
+	-- Run on all actors
+	for _, Actor in getactors() do
+		pcall(function()
+			run_on_actor(Actor, ActorEnvironmentCode, CommunicationChannelID)
+		end)
+	end
+end
+
+return {}
+
+end)() end,
     [37] = function()local wax,script,require=ImportGlobals(37)local ImportGlobals return (function(...)--[[
 	Main Window Logic for Nova
 	All UI elements are created and managed here.
@@ -2193,11 +2504,12 @@ end
 
 local InfoFrame = Interface.New("Frame", {
 	BackgroundColor3 = Theme.Background,
-	Size = UDim2.new(0.45, 0, 0.75, 0),
+	Size = UDim2.fromOffset(380, 320),
 	Position = UDim2.new(0.5, 0, 0.5, 0),
 	AnchorPoint = Vector2.new(0.5, 0.5),
 	Visible = false,
 	ZIndex = 50,
+	ClipsDescendants = true,
 	Parent = ScreenGui,
 
 	["UICorner"] = { CornerRadius = UDim.new(0, 8) },
@@ -2210,12 +2522,12 @@ local InfoFrame = Interface.New("Frame", {
 Drag.new(InfoFrame)
 Resize.new({
 	MainFrame = InfoFrame,
-	MinimumSize = UDim2.fromOffset(400, 300),
+	MinimumSize = UDim2.fromOffset(300, 220),
 })
 
 local InfoTitleBar = Interface.New("Frame", {
 	BackgroundColor3 = Theme.Surface,
-	Size = UDim2.new(1, 0, 0, 36),
+	Size = UDim2.new(1, 0, 0, 30),
 	BorderSizePixel = 0,
 	ZIndex = 51,
 	Parent = InfoFrame,
@@ -2225,13 +2537,14 @@ local InfoTitleBar = Interface.New("Frame", {
 
 local InfoTitle = Interface.New("TextLabel", {
 	BackgroundTransparency = 1,
-	Size = UDim2.new(1, -80, 1, 0),
-	Position = UDim2.new(0, 12, 0, 0),
+	Size = UDim2.new(1, -60, 1, 0),
+	Position = UDim2.new(0, 10, 0, 0),
 	Text = "Call Details",
 	TextColor3 = Theme.Text,
-	TextSize = 14,
+	TextSize = 13,
 	Font = Enum.Font.GothamBold,
 	TextXAlignment = Enum.TextXAlignment.Left,
+	TextTruncate = Enum.TextTruncate.AtEnd,
 	ZIndex = 52,
 	Parent = InfoTitleBar,
 })
@@ -2241,8 +2554,8 @@ local CloseInfoBtn = Interface.New("TextButton", {
 	Text = "",
 	BackgroundColor3 = Theme.SurfaceHover,
 	BackgroundTransparency = 0.5,
-	Size = UDim2.fromOffset(28, 28),
-	Position = UDim2.new(1, -34, 0.5, 0),
+	Size = UDim2.fromOffset(24, 24),
+	Position = UDim2.new(1, -28, 0.5, 0),
 	AnchorPoint = Vector2.new(0, 0.5),
 	AutoButtonColor = false,
 	ZIndex = 52,
@@ -2253,7 +2566,7 @@ local CloseInfoBtn = Interface.New("TextButton", {
 
 local closeIcon = Interface.New("ImageLabel", {
 	BackgroundTransparency = 1,
-	Size = UDim2.fromOffset(12, 12),
+	Size = UDim2.fromOffset(10, 10),
 	Position = UDim2.fromScale(0.5, 0.5),
 	AnchorPoint = Vector2.new(0.5, 0.5),
 	ImageColor3 = Theme.TextMuted,
@@ -2269,8 +2582,8 @@ end)
 -- Info content area
 local InfoContent = Interface.New("ScrollingFrame", {
 	BackgroundTransparency = 1,
-	Size = UDim2.new(1, -16, 1, -44),
-	Position = UDim2.new(0, 8, 0, 40),
+	Size = UDim2.new(1, -12, 1, -36),
+	Position = UDim2.new(0, 6, 0, 32),
 	AutomaticCanvasSize = Enum.AutomaticSize.Y,
 	CanvasSize = UDim2.fromScale(0, 0),
 	ScrollBarThickness = 3,
@@ -2281,13 +2594,13 @@ local InfoContent = Interface.New("ScrollingFrame", {
 
 	["UIListLayout"] = {
 		FillDirection = Enum.FillDirection.Vertical,
-		Padding = UDim.new(0, 6),
+		Padding = UDim.new(0, 3),
 	},
 })
 
 function ShowCallDetails(logEntry, callInfo, callIndex)
 	InfoFrame.Visible = true
-	InfoTitle.Text = `Call #{callIndex} - {logEntry.Instance.Name}`
+	InfoTitle.Text = `#{callIndex} {logEntry.Instance.Name}`
 
 	-- Clear previous content
 	for _, child in ipairs(InfoContent:GetChildren()) do
@@ -2300,17 +2613,17 @@ function ShowCallDetails(logEntry, callInfo, callIndex)
 	local function CreateInfoRow(label, value, valueColor)
 		local row = Interface.New("Frame", {
 			BackgroundTransparency = 1,
-			Size = UDim2.new(1, 0, 0, 20),
+			Size = UDim2.new(1, 0, 0, 16),
 			ZIndex = 52,
 			Parent = InfoContent,
 		})
 
 		Interface.New("TextLabel", {
 			BackgroundTransparency = 1,
-			Size = UDim2.new(0, 120, 1, 0),
+			Size = UDim2.new(0, 80, 1, 0),
 			Text = label,
 			TextColor3 = Theme.TextMuted,
-			TextSize = 12,
+			TextSize = 11,
 			Font = Enum.Font.GothamMedium,
 			TextXAlignment = Enum.TextXAlignment.Left,
 			ZIndex = 52,
@@ -2319,11 +2632,11 @@ function ShowCallDetails(logEntry, callInfo, callIndex)
 
 		Interface.New("TextLabel", {
 			BackgroundTransparency = 1,
-			Size = UDim2.new(1, -130, 1, 0),
-			Position = UDim2.new(0, 130, 0, 0),
+			Size = UDim2.new(1, -85, 1, 0),
+			Position = UDim2.new(0, 85, 0, 0),
 			Text = tostring(value),
 			TextColor3 = valueColor or Theme.Text,
-			TextSize = 12,
+			TextSize = 11,
 			Font = Enum.Font.GothamMedium,
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextTruncate = Enum.TextTruncate.AtEnd,
@@ -2353,10 +2666,10 @@ function ShowCallDetails(logEntry, callInfo, callIndex)
 	-- Args Section
 	Interface.New("TextLabel", {
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, 0, 0, 24),
+		Size = UDim2.new(1, 0, 0, 18),
 		Text = "Arguments",
 		TextColor3 = Theme.Text,
-		TextSize = 14,
+		TextSize = 12,
 		Font = Enum.Font.GothamBold,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		ZIndex = 52,
@@ -2442,23 +2755,23 @@ function ShowCallDetails(logEntry, callInfo, callIndex)
 		local btn = Interface.New("TextButton", {
 			Text = "",
 			BackgroundColor3 = Theme.Surface,
-			Size = UDim2.new(0, 0, 0, 30),
+			Size = UDim2.new(0, 0, 0, 24),
 			AutomaticSize = Enum.AutomaticSize.X,
 			AutoButtonColor = false,
 			ZIndex = 53,
 			Parent = ActionButtons,
 
-			["UICorner"] = { CornerRadius = UDim.new(0, 6) },
+			["UICorner"] = { CornerRadius = UDim.new(0, 5) },
 			["UIPadding"] = {
-				PaddingLeft = UDim.new(0, 8),
-				PaddingRight = UDim.new(0, 10),
+				PaddingLeft = UDim.new(0, 6),
+				PaddingRight = UDim.new(0, 8),
 			},
 		})
 
 		local icon = Interface.New("ImageLabel", {
 			BackgroundTransparency = 1,
-			Size = UDim2.fromOffset(12, 12),
-			Position = UDim2.new(0, 2, 0.5, 0),
+			Size = UDim2.fromOffset(10, 10),
+			Position = UDim2.new(0, 1, 0.5, 0),
 			AnchorPoint = Vector2.new(0, 0.5),
 			ImageColor3 = Theme.TextMuted,
 			ZIndex = 54,
@@ -2470,10 +2783,10 @@ function ShowCallDetails(logEntry, callInfo, callIndex)
 			BackgroundTransparency = 1,
 			Size = UDim2.new(0, 0, 1, 0),
 			AutomaticSize = Enum.AutomaticSize.X,
-			Position = UDim2.new(0, 18, 0, 0),
+			Position = UDim2.new(0, 14, 0, 0),
 			Text = text,
 			TextColor3 = Theme.Text,
-			TextSize = 11,
+			TextSize = 10,
 			Font = Enum.Font.GothamMedium,
 			ZIndex = 54,
 			Parent = btn,
@@ -3312,110 +3625,6 @@ SwitchTab("Outgoing")
 return {}
 
 end)() end,
-    [11] = function()local wax,script,require=ImportGlobals(11)local ImportGlobals return (function(...)--[[
-	Nova Spy Initialization
-	Sets up all hooks for monitoring remote events.
-]]
-
-local LuaEncode = require(script.Parent.Parent.Utils.Serializer.LuaEncode)
-local CodeGen = require(script.Parent.Parent.Utils.CodeGen.Generator)
-
-local Hooks = script.Parent.Hooks
-
--- Main Thread Hooks
-for _, Hook in Hooks.Default:GetChildren() do
-	task.spawn(require, Hook)
-end
-
-getgenv().NovaInitialized = true
-
--- Actor support
-local ActorsUtils = script.Parent.Actors
-
-wax.shared.ActorsEnabled = (
-	wax.shared.ExecutorSupport["run_on_actor"].IsWorking
-	and wax.shared.ExecutorSupport["getactors"].IsWorking
-	and wax.shared.ExecutorSupport["create_comm_channel"].IsWorking
-)
-
-if wax.shared.ActorsEnabled then
-	local ActorEnvironmentCode = ActorsUtils.Environment.Value
-
-	local IgnorePlayerModule = wax.shared.SaveManager:GetState("IgnorePlayerModule", true)
-	local IgnoredRemotesDropdown = wax.shared.SaveManager:GetState("IgnoredRemotesDropdown", {
-		["BindableEvent"] = true,
-		["BindableFunction"] = true,
-	})
-
-	local AlternativeEnabled = wax.shared.SaveManager:GetState("UseAlternativeHooks", false)
-
-	local CommunicationChannelID, Channel = create_comm_channel()
-	wax.shared.ActorCommunicator = Channel
-
-	local ActorData = LuaEncode({
-		Token = wax.shared.NovaVerificationToken,
-		IgnorePlayerModule = IgnorePlayerModule,
-		IgnoredRemotesDropdown = IgnoredRemotesDropdown,
-		UseAlternativeHooks = AlternativeEnabled,
-		ExecutorSupport = wax.shared.ExecutorSupport,
-	})
-
-	ActorEnvironmentCode = ActorEnvironmentCode:gsub("NOVA_ACTOR_DATA", ActorData)
-
-	-- Actor Logs Sync Layer
-	local function ReconstructTable(Info, CyclicRefs)
-		local Reconstructed = {}
-
-		for Key, Value in Info do
-			if type(Value) == "table" then
-				if Value["__Function"] and Value["Validation"] == wax.shared.NovaVerificationToken then
-					local FunctionData = table.clone(Value)
-					FunctionData["__Function"] = nil
-					FunctionData["Validation"] = nil
-
-					Reconstructed[Key] = FunctionData
-				else
-					Reconstructed[Key] = ReconstructTable(Value, CyclicRefs)
-				end
-			else
-				Reconstructed[Key] = Value
-			end
-		end
-
-		return Reconstructed
-	end
-
-	-- Listen for actor events
-	Channel:Listen("ActorLog", function(RemoteInstance, EventType, CallInfo)
-		if not RemoteInstance or not EventType then
-			return
-		end
-
-		local Log = wax.shared.Logs[EventType][RemoteInstance]
-		if not Log then
-			Log = wax.shared.Log and wax.shared.Log.new(RemoteInstance, EventType, CallInfo.Method, nil, nil)
-			if Log then
-				wax.shared.Logs[EventType][RemoteInstance] = Log
-			end
-		end
-
-		if Log then
-			local ReconstructedInfo = ReconstructTable(CallInfo, {})
-			Log:Call(ReconstructedInfo)
-		end
-	end)
-
-	-- Run on all actors
-	for _, Actor in getactors() do
-		pcall(function()
-			run_on_actor(Actor, ActorEnvironmentCode, CommunicationChannelID)
-		end)
-	end
-end
-
-return {}
-
-end)() end,
     [18] = function()local wax,script,require=ImportGlobals(18)local ImportGlobals return (function(...)--[[
 	Code Generation Module for Nova
 	Generates Lua code snippets for remote calls.
@@ -3632,593 +3841,102 @@ end
 return CodeGen
 
 end)() end,
-    [27] = function()local wax,script,require=ImportGlobals(27)local ImportGlobals return (function(...)-- LuaEncode - Optimal Table Serialization for Native Luau/Lua 5.1+
--- Copyright (c) 2022-2023 Reggie <reggie@latte.to> | MIT License
--- https://github.com/regginator/LuaEncode
--- Adapted for Nova Remote Spy
-
---!nocheck
---!optimize 2
-
-local table, ipairs, string, next, pcall, game, workspace, tostring, tonumber, getmetatable = table, ipairs, string, next, pcall, game, workspace, tostring, tonumber, getmetatable
-
-local string_format = string.format
-local string_char = string.char
-local string_gsub = string.gsub
-local string_match = string.match
-local string_rep = string.rep
-local string_sub = string.sub
-local string_gmatch = string.gmatch
-
-local table_find = table.find
-local table_concat = table.concat
-local table_insert = table.insert
-
-local Type = typeof or type
-
-local function CheckType(value, argName, ...)
-	local AllowedTypes = { ... }
-	local ValueType = Type(value)
-
-	if not table_find(AllowedTypes, ValueType) then
-		error(string_format("invalid argument '%s' (%s expected, got %s)", argName, table_concat(AllowedTypes, " or "), ValueType), 3)
-	end
-end
-
-local SerializerVersion = "1.0.0-nova"
-
-local function LuaEncode(inputTable, options)
-	options = options or {}
-
-	CheckType(inputTable, "inputTable", "table")
-	CheckType(options, "options", "table")
-
-	local Prettify = (options.Prettify or options.PrettyPrinting) or false
-	local IndentCount = options.IndentCount or (Prettify and 4 or 0)
-	local InsertCycles = options.InsertCycles or false
-	local OutputWarnings = (options.OutputWarnings == nil and true) or options.OutputWarnings
-	local FunctionsReturnRaw = options.FunctionsReturnRaw or false
-	local UseInstancePaths = (options.UseInstancePaths == nil and true) or options.UseInstancePaths
-	local SerializeMathHuge = (options.SerializeMathHuge == nil and true) or options.SerializeMathHuge
-	local DisableNilParentHandler = options.DisableNilParentHandler or false
-	local IsArray = options.IsArray or false
-
-	local StackLevel = options._StackLevel or 1
-	local VisitedTables = options._VisitedTables or {}
-
-	local PositiveInf = (SerializeMathHuge and "math.huge") or "1/0"
-	local NegativeInf = (SerializeMathHuge and "-math.huge") or "-1/0"
-	local NewEntryString = (Prettify and "\n") or ""
-	local ValueSeperator = (Prettify and ", ") or ","
-
-	local IndentString = string_rep(" ", IndentCount)
-	local CurrentIndent = string_rep(IndentString, StackLevel)
-	local PreviousIndent = string_rep(IndentString, StackLevel - 1)
-
-	local function SerializeString(str)
-		return string_format("%q", str)
-	end
-
-	local function SerializeNumber(num)
-		if num ~= num then
-			return "0/0" -- NaN
-		elseif num == math.huge then
-			return PositiveInf
-		elseif num == -math.huge then
-			return NegativeInf
-		end
-		return tostring(num)
-	end
-
-	local function SerializeInstance(inst)
-		if not UseInstancePaths then
-			return `"Instance<{inst.ClassName}>"`
-		end
-
-		local path = {}
-		local current = inst
-		while current and current ~= game do
-			table_insert(path, 1, current.Name)
-			current = current.Parent
-		end
-
-		if #path == 0 then
-			return `"Instance<{inst.Name} (nil parent)>"`
-		end
-
-		local service = inst
-		local temp = inst
-		while temp.Parent and temp.Parent ~= game do
-			temp = temp.Parent
-		end
-		if temp.Parent == game then
-			service = temp
-		end
-
-		local result = `game:GetService("{service.ClassName}")`
-		local parts = {}
-		local c = inst
-		while c and c ~= service do
-			table_insert(parts, 1, c.Name)
-			c = c.Parent
-		end
-
-		for _, name in ipairs(parts) do
-			if string_match(name, "^[%a_][%w_]*$") then
-				result ..= `.{name}`
-			else
-				result ..= `[{SerializeString(name)}]`
-			end
-		end
-
-		return result
-	end
-
-	local Output = {}
-
-	if VisitedTables[inputTable] then
-		return `"<Cyclic Reference>"`
-	end
-	VisitedTables[inputTable] = true
-
-	-- Check if array
-	local isArray = IsArray
-	if not isArray then
-		local maxIndex = 0
-		local count = 0
-		for k, _ in pairs(inputTable) do
-			if type(k) == "number" and k > 0 and math.floor(k) == k then
-				maxIndex = math.max(maxIndex, k)
-			end
-			count += 1
-		end
-		isArray = (count > 0 and maxIndex == count)
-	end
-
-	table_insert(Output, "{" .. NewEntryString)
-
-	local isFirst = true
-
-	if isArray then
-		for i, value in ipairs(inputTable) do
-			if not isFirst then
-				table_insert(Output, "," .. NewEntryString)
-			end
-			isFirst = false
-
-			table_insert(Output, CurrentIndent)
-
-			local valueType = Type(value)
-			if valueType == "table" then
-				table_insert(Output, LuaEncode(value, {
-					Prettify = Prettify,
-					IndentCount = IndentCount,
-					FunctionsReturnRaw = FunctionsReturnRaw,
-					UseInstancePaths = UseInstancePaths,
-					SerializeMathHuge = SerializeMathHuge,
-					_StackLevel = StackLevel + 1,
-					_VisitedTables = VisitedTables,
-				}))
-			elseif valueType == "string" then
-				table_insert(Output, SerializeString(value))
-			elseif valueType == "number" then
-				table_insert(Output, SerializeNumber(value))
-			elseif valueType == "boolean" then
-				table_insert(Output, tostring(value))
-			elseif valueType == "Instance" then
-				table_insert(Output, SerializeInstance(value))
-			elseif valueType == "function" then
-				if FunctionsReturnRaw then
-					local info = debug.info(value, "n")
-					table_insert(Output, `"<Function: {info or "anonymous"}>"`)
-				else
-					table_insert(Output, `"<Function>"`)
-				end
-			elseif valueType == "nil" then
-				table_insert(Output, "nil")
-			elseif valueType == "Vector3" then
-				table_insert(Output, `Vector3.new({value.X}{ValueSeperator}{value.Y}{ValueSeperator}{value.Z})`)
-			elseif valueType == "Vector2" then
-				table_insert(Output, `Vector2.new({value.X}{ValueSeperator}{value.Y})`)
-			elseif valueType == "CFrame" then
-				local components = { value:GetComponents() }
-				table_insert(Output, `CFrame.new({table_concat(components, ValueSeperator)})`)
-			elseif valueType == "Color3" then
-				table_insert(Output, `Color3.new({value.R}{ValueSeperator}{value.G}{ValueSeperator}{value.B})`)
-			elseif valueType == "BrickColor" then
-				table_insert(Output, `BrickColor.new("{tostring(value)}")`)
-			elseif valueType == "EnumItem" then
-				table_insert(Output, tostring(value))
-			elseif valueType == "UDim" then
-				table_insert(Output, `UDim.new({value.Scale}{ValueSeperator}{value.Offset})`)
-			elseif valueType == "UDim2" then
-				table_insert(Output, `UDim2.new({value.X.Scale}{ValueSeperator}{value.X.Offset}{ValueSeperator}{value.Y.Scale}{ValueSeperator}{value.Y.Offset})`)
-			elseif valueType == "Ray" then
-				table_insert(Output, `Ray.new(Vector3.new({value.Origin.X}{ValueSeperator}{value.Origin.Y}{ValueSeperator}{value.Origin.Z}){ValueSeperator}Vector3.new({value.Direction.X}{ValueSeperator}{value.Direction.Y}{ValueSeperator}{value.Direction.Z}))`)
-			elseif valueType == "NumberRange" then
-				table_insert(Output, `NumberRange.new({value.Min}{ValueSeperator}{value.Max})`)
-			elseif valueType == "buffer" then
-				local bufStr = buffer.tostring(value)
-				table_insert(Output, `buffer.fromstring({SerializeString(bufStr)})`)
-			else
-				table_insert(Output, `"<{valueType}>"`)
-			end
-		end
-	else
-		for key, value in pairs(inputTable) do
-			if not isFirst then
-				table_insert(Output, "," .. NewEntryString)
-			end
-			isFirst = false
-
-			table_insert(Output, CurrentIndent)
-
-			-- Key
-			local keyType = Type(key)
-			if keyType == "string" then
-				if string_match(key, "^[%a_][%w_]*$") then
-					table_insert(Output, key .. " = ")
-				else
-					table_insert(Output, `[{SerializeString(key)}] = `)
-				end
-			elseif keyType == "number" then
-				table_insert(Output, `[{SerializeNumber(key)}] = `)
-			else
-				table_insert(Output, `[{SerializeString(tostring(key))}] = `)
-			end
-
-			-- Value
-			local valueType = Type(value)
-			if valueType == "table" then
-				table_insert(Output, LuaEncode(value, {
-					Prettify = Prettify,
-					IndentCount = IndentCount,
-					FunctionsReturnRaw = FunctionsReturnRaw,
-					UseInstancePaths = UseInstancePaths,
-					SerializeMathHuge = SerializeMathHuge,
-					_StackLevel = StackLevel + 1,
-					_VisitedTables = VisitedTables,
-				}))
-			elseif valueType == "string" then
-				table_insert(Output, SerializeString(value))
-			elseif valueType == "number" then
-				table_insert(Output, SerializeNumber(value))
-			elseif valueType == "boolean" then
-				table_insert(Output, tostring(value))
-			elseif valueType == "Instance" then
-				table_insert(Output, SerializeInstance(value))
-			elseif valueType == "function" then
-				if FunctionsReturnRaw then
-					local info = debug.info(value, "n")
-					table_insert(Output, `"<Function: {info or "anonymous"}>"`)
-				else
-					table_insert(Output, `"<Function>"`)
-				end
-			elseif valueType == "nil" then
-				table_insert(Output, "nil")
-			elseif valueType == "Vector3" then
-				table_insert(Output, `Vector3.new({value.X}{ValueSeperator}{value.Y}{ValueSeperator}{value.Z})`)
-			elseif valueType == "Vector2" then
-				table_insert(Output, `Vector2.new({value.X}{ValueSeperator}{value.Y})`)
-			elseif valueType == "CFrame" then
-				local components = { value:GetComponents() }
-				table_insert(Output, `CFrame.new({table_concat(components, ValueSeperator)})`)
-			elseif valueType == "Color3" then
-				table_insert(Output, `Color3.new({value.R}{ValueSeperator}{value.G}{ValueSeperator}{value.B})`)
-			elseif valueType == "BrickColor" then
-				table_insert(Output, `BrickColor.new("{tostring(value)}")`)
-			elseif valueType == "EnumItem" then
-				table_insert(Output, tostring(value))
-			elseif valueType == "UDim" then
-				table_insert(Output, `UDim.new({value.Scale}{ValueSeperator}{value.Offset})`)
-			elseif valueType == "UDim2" then
-				table_insert(Output, `UDim2.new({value.X.Scale}{ValueSeperator}{value.X.Offset}{ValueSeperator}{value.Y.Scale}{ValueSeperator}{value.Y.Offset})`)
-			elseif valueType == "buffer" then
-				local bufStr = buffer.tostring(value)
-				table_insert(Output, `buffer.fromstring({SerializeString(bufStr)})`)
-			else
-				table_insert(Output, `"<{valueType}>"`)
-			end
-		end
-	end
-
-	table_insert(Output, NewEntryString .. PreviousIndent .. "}")
-
-	return table_concat(Output)
-end
-
-return LuaEncode
-
-end)() end,
-    [19] = function()local wax,script,require=ImportGlobals(19)local ImportGlobals return (function(...)--[[
-	Session Exporter for Nova
-	Exports logged session data to an HTML file.
+    [14] = function()local wax,script,require=ImportGlobals(14)local ImportGlobals return (function(...)--[[
+	Anticheat Detection & Bypass Module for Nova
 ]]
 
-local SessionExporter = {}
+local AnticheatMain = {
+	Name = nil,
+	Detected = false,
+	Disabled = false,
+	Bypass = nil,
+}
 
-function SessionExporter:ProcessCalls(AllCalls, SessionData, UpdateProgress)
-	local Events = {}
-	local StringMap = {}
-	local StringIndex = 0
+-- Try to detect known anticheats
+local function DetectAnticheats()
+	-- Adonis detection
+	local adonisSuccess, adonisResult = pcall(function()
+		local adonisFolder = game:GetService("ReplicatedStorage"):FindFirstChild("_Adonis")
+			or game:GetService("ServerScriptService"):FindFirstChild("Adonis_Loader")
+		return adonisFolder ~= nil
+	end)
 
-	local function InternString(str)
-		if not StringMap[str] then
-			StringMap[str] = StringIndex
-			StringIndex += 1
-		end
-		return StringMap[str]
+	if adonisSuccess and adonisResult then
+		AnticheatMain.Name = "Adonis"
+		AnticheatMain.Detected = true
+		AnticheatMain.Bypass = require(script.impl.Adonis)
+		return
 	end
 
-	local Total = #AllCalls
-	for i, CallData in ipairs(AllCalls) do
-		if UpdateProgress then
-			UpdateProgress(i / Total)
-		end
+	-- Generic detection for common anticheat patterns
+	local genericSuccess, genericResult = pcall(function()
+		local antiExploit = game:GetService("ReplicatedStorage"):FindFirstChild("AntiExploit")
+			or game:GetService("ReplicatedStorage"):FindFirstChild("Anti-Exploit")
+			or game:GetService("ReplicatedStorage"):FindFirstChild("AntiCheat")
+		return antiExploit ~= nil
+	end)
 
-		local event = {
-			Type = InternString(CallData.Type or "Unknown"),
-			Remote = InternString(CallData.RemoteName or "Unknown"),
-			ClassName = InternString(CallData.ClassName or "Unknown"),
-			Time = CallData.Time or 0,
-			ArgCount = CallData.ArgCount or 0,
-		}
-
-		table.insert(Events, event)
+	if genericSuccess and genericResult then
+		AnticheatMain.Name = "Generic AntiExploit"
+		AnticheatMain.Detected = true
+		return
 	end
-
-	return Events, StringMap
 end
 
-function SessionExporter:ExportSessionToHTML(Events, StringMap, SessionData)
-	local ReverseStringMap = {}
-	for str, idx in pairs(StringMap) do
-		ReverseStringMap[idx] = str
-	end
+pcall(DetectAnticheats)
 
-	local eventsJson = wax.shared.HttpService:JSONEncode(Events)
-	local stringMapJson = wax.shared.HttpService:JSONEncode(ReverseStringMap)
-
-	local SessionId = SessionData.SessionId or wax.shared.HttpService:GenerateGUID(false)
-	local StartTime = SessionData.StartTime or 0
-	local EndTime = SessionData.EndTime or tick()
-	local PlaceId = SessionData.PlaceId or game.PlaceId
-	local Duration = string.format("%.1f", EndTime - StartTime)
-
-	local HTML = [[<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nova - Session Viewer</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
-            background: #0d1117;
-            color: #c9d1d9;
-        }
-        .header {
-            background: #161b22;
-            border-bottom: 1px solid #30363d;
-            padding: 12px 20px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .brand {
-            font-weight: 700;
-            font-size: 16px;
-            color: #58a6ff;
-        }
-        .session-info {
-            font-size: 12px;
-            color: #8b949e;
-        }
-        .content {
-            padding: 20px;
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-        .stats {
-            display: flex;
-            gap: 20px;
-            margin-bottom: 20px;
-        }
-        .stat-card {
-            background: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 6px;
-            padding: 16px;
-            flex: 1;
-        }
-        .stat-label {
-            font-size: 11px;
-            color: #8b949e;
-            text-transform: uppercase;
-            margin-bottom: 4px;
-        }
-        .stat-value {
-            font-size: 24px;
-            font-weight: 700;
-            color: #f0f6fc;
-        }
-        .event-table {
-            width: 100%;
-            border-collapse: collapse;
-            background: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 6px;
-            overflow: hidden;
-        }
-        .event-table th {
-            background: #21262d;
-            padding: 8px 12px;
-            text-align: left;
-            font-size: 12px;
-            color: #8b949e;
-            font-weight: 600;
-        }
-        .event-table td {
-            padding: 6px 12px;
-            border-top: 1px solid #21262d;
-            font-size: 13px;
-        }
-        .type-incoming { color: #3fb950; }
-        .type-outgoing { color: #f78166; }
-        .footer {
-            padding: 12px 20px;
-            text-align: center;
-            color: #484f58;
-            font-size: 11px;
-            border-top: 1px solid #30363d;
-            margin-top: 40px;
-        }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <div class="brand">Nova - Session Viewer</div>
-        <div class="session-info">Session / ]] .. SessionId .. [[</div>
-    </div>
-    <div class="content">
-        <div class="stats">
-            <div class="stat-card">
-                <div class="stat-label">Total Events</div>
-                <div class="stat-value">]] .. tostring(#Events) .. [[</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Duration</div>
-                <div class="stat-value">]] .. Duration .. [[s</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Place ID</div>
-                <div class="stat-value">]] .. tostring(PlaceId) .. [[</div>
-            </div>
-        </div>
-        <table class="event-table">
-            <thead>
-                <tr>
-                    <th>#</th>
-                    <th>Type</th>
-                    <th>Remote</th>
-                    <th>Class</th>
-                    <th>Time</th>
-                    <th>Args</th>
-                </tr>
-            </thead>
-            <tbody id="eventBody"></tbody>
-        </table>
-    </div>
-    <div class="footer">Generated by Nova Remote Spy</div>
-    <script>
-        const events = ]] .. eventsJson .. [[;
-        const stringMap = ]] .. stringMapJson .. [[;
-        const body = document.getElementById('eventBody');
-        events.forEach((e, i) => {
-            const type = stringMap[e.Type] || 'Unknown';
-            const typeClass = type === 'Incoming' ? 'type-incoming' : 'type-outgoing';
-            body.innerHTML += `<tr>
-                <td>${i + 1}</td>
-                <td class="${typeClass}">${type}</td>
-                <td>${stringMap[e.Remote] || 'Unknown'}</td>
-                <td>${stringMap[e.ClassName] || 'Unknown'}</td>
-                <td>${e.Time.toFixed(3)}s</td>
-                <td>${e.ArgCount}</td>
-            </tr>`;
-        });
-    </script>
-</body>
-</html>]]
-
-	return HTML
-end
-
-return SessionExporter
+return AnticheatMain
 
 end)() end,
-    [30] = function()local wax,script,require=ImportGlobals(30)local ImportGlobals return (function(...)--[[
-	Helper Module for Nova
-	Various UI utility functions.
+    [16] = function()local wax,script,require=ImportGlobals(16)local ImportGlobals return (function(...)--[[
+	Adonis Anticheat Bypass for Nova
 ]]
 
-local Helper = {}
+local function BypassAdonis()
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-function Helper.Ripple(button: TextButton | ImageButton, color: Color3?)
-	color = color or Color3.fromRGB(255, 255, 255)
-
-	button.ClipsDescendants = true
-
-	button.MouseButton1Click:Connect(function()
-		local mouse = game:GetService("UserInputService"):GetMouseLocation()
-		local absolutePos = button.AbsolutePosition
-		local relativeX = mouse.X - absolutePos.X
-		local relativeY = mouse.Y - absolutePos.Y
-
-		local circle = Instance.new("Frame")
-		circle.BackgroundColor3 = color
-		circle.BackgroundTransparency = 0.7
-		circle.Position = UDim2.fromOffset(relativeX, relativeY)
-		circle.AnchorPoint = Vector2.new(0.5, 0.5)
-		circle.Size = UDim2.fromOffset(0, 0)
-
-		local corner = Instance.new("UICorner")
-		corner.CornerRadius = UDim.new(1, 0)
-		corner.Parent = circle
-
-		circle.Parent = button
-
-		local size = math.max(button.AbsoluteSize.X, button.AbsoluteSize.Y) * 2
-		local tween = wax.shared.TweenService:Create(circle, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-			Size = UDim2.fromOffset(size, size),
-			BackgroundTransparency = 1,
-		})
-
-		tween:Play()
-		tween.Completed:Connect(function()
-			circle:Destroy()
-		end)
-	end)
-end
-
-function Helper.HoverEffect(button: GuiObject, hoverColor: Color3?, normalColor: Color3?)
-	normalColor = normalColor or button.BackgroundColor3
-	hoverColor = hoverColor or Color3.fromRGB(
-		math.min(normalColor.R * 255 + 20, 255) / 255,
-		math.min(normalColor.G * 255 + 20, 255) / 255,
-		math.min(normalColor.B * 255 + 20, 255) / 255
-	)
-
-	button.MouseEnter:Connect(function()
-		wax.shared.TweenService:Create(button, TweenInfo.new(0.15), {
-			BackgroundColor3 = hoverColor,
-		}):Play()
-	end)
-
-	button.MouseLeave:Connect(function()
-		wax.shared.TweenService:Create(button, TweenInfo.new(0.15), {
-			BackgroundColor3 = normalColor,
-		}):Play()
-	end)
-end
-
-function Helper.Truncate(text: string, maxLength: number): string
-	if #text <= maxLength then
-		return text
+	local AdonisFolder = ReplicatedStorage:FindFirstChild("_Adonis")
+	if not AdonisFolder then
+		return false
 	end
-	return string.sub(text, 1, maxLength - 3) .. "..."
-end
 
-function Helper.FormatNumber(num: number): string
-	if num >= 1000000 then
-		return string.format("%.1fM", num / 1000000)
-	elseif num >= 1000 then
-		return string.format("%.1fK", num / 1000)
+	-- Find and disable detection remotes
+	local function DisableDetectionFunctions(parent)
+		for _, child in pairs(parent:GetDescendants()) do
+			if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then
+				local name = child.Name:lower()
+				if name:find("detect") or name:find("kick") or name:find("ban") or name:find("exploit") then
+					-- Hook the remote to prevent it from doing anything
+					if child:IsA("RemoteFunction") and child.OnClientInvoke then
+						local DetectionFunc = child.OnClientInvoke
+						if typeof(DetectionFunc) == "function" then
+							wax.shared.Hooks[DetectionFunc] = wax.shared.Hooking.HookFunction(
+								DetectionFunc,
+								function(action, info, nocrash)
+									coroutine.yield(coroutine.running())
+									return task.wait(9e9)
+								end
+							)
+						end
+					end
+				end
+			end
+		end
 	end
-	return tostring(num)
+
+	pcall(DisableDetectionFunctions, AdonisFolder)
+
+	-- Hook getconnections to hide our connections
+	if getconnections then
+		for _, connection in pairs(getconnections(game:GetService("Players").LocalPlayer.Idled)) do
+			-- Keep connections alive but hidden
+		end
+	end
+
+	return true
 end
 
-return Helper
+return BypassAdonis
 
 end)() end,
     [23] = function()local wax,script,require=ImportGlobals(23)local ImportGlobals return (function(...)local Log = {}
@@ -4584,51 +4302,88 @@ task.spawn(ScanAndHookRemotes)
 return {}
 
 end)() end,
-    [14] = function()local wax,script,require=ImportGlobals(14)local ImportGlobals return (function(...)--[[
-	Anticheat Detection & Bypass Module for Nova
+    [30] = function()local wax,script,require=ImportGlobals(30)local ImportGlobals return (function(...)--[[
+	Helper Module for Nova
+	Various UI utility functions.
 ]]
 
-local AnticheatMain = {
-	Name = nil,
-	Detected = false,
-	Disabled = false,
-	Bypass = nil,
-}
+local Helper = {}
 
--- Try to detect known anticheats
-local function DetectAnticheats()
-	-- Adonis detection
-	local adonisSuccess, adonisResult = pcall(function()
-		local adonisFolder = game:GetService("ReplicatedStorage"):FindFirstChild("_Adonis")
-			or game:GetService("ServerScriptService"):FindFirstChild("Adonis_Loader")
-		return adonisFolder ~= nil
+function Helper.Ripple(button: TextButton | ImageButton, color: Color3?)
+	color = color or Color3.fromRGB(255, 255, 255)
+
+	button.ClipsDescendants = true
+
+	button.MouseButton1Click:Connect(function()
+		local mouse = game:GetService("UserInputService"):GetMouseLocation()
+		local absolutePos = button.AbsolutePosition
+		local relativeX = mouse.X - absolutePos.X
+		local relativeY = mouse.Y - absolutePos.Y
+
+		local circle = Instance.new("Frame")
+		circle.BackgroundColor3 = color
+		circle.BackgroundTransparency = 0.7
+		circle.Position = UDim2.fromOffset(relativeX, relativeY)
+		circle.AnchorPoint = Vector2.new(0.5, 0.5)
+		circle.Size = UDim2.fromOffset(0, 0)
+
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(1, 0)
+		corner.Parent = circle
+
+		circle.Parent = button
+
+		local size = math.max(button.AbsoluteSize.X, button.AbsoluteSize.Y) * 2
+		local tween = wax.shared.TweenService:Create(circle, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Size = UDim2.fromOffset(size, size),
+			BackgroundTransparency = 1,
+		})
+
+		tween:Play()
+		tween.Completed:Connect(function()
+			circle:Destroy()
+		end)
 	end)
-
-	if adonisSuccess and adonisResult then
-		AnticheatMain.Name = "Adonis"
-		AnticheatMain.Detected = true
-		AnticheatMain.Bypass = require(script.impl.Adonis)
-		return
-	end
-
-	-- Generic detection for common anticheat patterns
-	local genericSuccess, genericResult = pcall(function()
-		local antiExploit = game:GetService("ReplicatedStorage"):FindFirstChild("AntiExploit")
-			or game:GetService("ReplicatedStorage"):FindFirstChild("Anti-Exploit")
-			or game:GetService("ReplicatedStorage"):FindFirstChild("AntiCheat")
-		return antiExploit ~= nil
-	end)
-
-	if genericSuccess and genericResult then
-		AnticheatMain.Name = "Generic AntiExploit"
-		AnticheatMain.Detected = true
-		return
-	end
 end
 
-pcall(DetectAnticheats)
+function Helper.HoverEffect(button: GuiObject, hoverColor: Color3?, normalColor: Color3?)
+	normalColor = normalColor or button.BackgroundColor3
+	hoverColor = hoverColor or Color3.fromRGB(
+		math.min(normalColor.R * 255 + 20, 255) / 255,
+		math.min(normalColor.G * 255 + 20, 255) / 255,
+		math.min(normalColor.B * 255 + 20, 255) / 255
+	)
 
-return AnticheatMain
+	button.MouseEnter:Connect(function()
+		wax.shared.TweenService:Create(button, TweenInfo.new(0.15), {
+			BackgroundColor3 = hoverColor,
+		}):Play()
+	end)
+
+	button.MouseLeave:Connect(function()
+		wax.shared.TweenService:Create(button, TweenInfo.new(0.15), {
+			BackgroundColor3 = normalColor,
+		}):Play()
+	end)
+end
+
+function Helper.Truncate(text: string, maxLength: number): string
+	if #text <= maxLength then
+		return text
+	end
+	return string.sub(text, 1, maxLength - 3) .. "..."
+end
+
+function Helper.FormatNumber(num: number): string
+	if num >= 1000000 then
+		return string.format("%.1fM", num / 1000000)
+	elseif num >= 1000 then
+		return string.format("%.1fK", num / 1000)
+	end
+	return tostring(num)
+end
+
+return Helper
 
 end)() end,
     [31] = function()local wax,script,require=ImportGlobals(31)local ImportGlobals return (function(...)--[[
@@ -4716,55 +4471,302 @@ Highlighter.Colors = Colors
 return Highlighter
 
 end)() end,
-    [16] = function()local wax,script,require=ImportGlobals(16)local ImportGlobals return (function(...)--[[
-	Adonis Anticheat Bypass for Nova
-]]
+    [27] = function()local wax,script,require=ImportGlobals(27)local ImportGlobals return (function(...)-- LuaEncode - Optimal Table Serialization for Native Luau/Lua 5.1+
+-- Copyright (c) 2022-2023 Reggie <reggie@latte.to> | MIT License
+-- https://github.com/regginator/LuaEncode
+-- Adapted for Nova Remote Spy
 
-local function BypassAdonis()
-	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+--!nocheck
+--!optimize 2
 
-	local AdonisFolder = ReplicatedStorage:FindFirstChild("_Adonis")
-	if not AdonisFolder then
-		return false
+local table, ipairs, string, next, pcall, game, workspace, tostring, tonumber, getmetatable = table, ipairs, string, next, pcall, game, workspace, tostring, tonumber, getmetatable
+
+local string_format = string.format
+local string_char = string.char
+local string_gsub = string.gsub
+local string_match = string.match
+local string_rep = string.rep
+local string_sub = string.sub
+local string_gmatch = string.gmatch
+
+local table_find = table.find
+local table_concat = table.concat
+local table_insert = table.insert
+
+local Type = typeof or type
+
+local function CheckType(value, argName, ...)
+	local AllowedTypes = { ... }
+	local ValueType = Type(value)
+
+	if not table_find(AllowedTypes, ValueType) then
+		error(string_format("invalid argument '%s' (%s expected, got %s)", argName, table_concat(AllowedTypes, " or "), ValueType), 3)
+	end
+end
+
+local SerializerVersion = "1.0.0-nova"
+
+local function LuaEncode(inputTable, options)
+	options = options or {}
+
+	CheckType(inputTable, "inputTable", "table")
+	CheckType(options, "options", "table")
+
+	local Prettify = (options.Prettify or options.PrettyPrinting) or false
+	local IndentCount = options.IndentCount or (Prettify and 4 or 0)
+	local InsertCycles = options.InsertCycles or false
+	local OutputWarnings = (options.OutputWarnings == nil and true) or options.OutputWarnings
+	local FunctionsReturnRaw = options.FunctionsReturnRaw or false
+	local UseInstancePaths = (options.UseInstancePaths == nil and true) or options.UseInstancePaths
+	local SerializeMathHuge = (options.SerializeMathHuge == nil and true) or options.SerializeMathHuge
+	local DisableNilParentHandler = options.DisableNilParentHandler or false
+	local IsArray = options.IsArray or false
+
+	local StackLevel = options._StackLevel or 1
+	local VisitedTables = options._VisitedTables or {}
+
+	local PositiveInf = (SerializeMathHuge and "math.huge") or "1/0"
+	local NegativeInf = (SerializeMathHuge and "-math.huge") or "-1/0"
+	local NewEntryString = (Prettify and "\n") or ""
+	local ValueSeperator = (Prettify and ", ") or ","
+
+	local IndentString = string_rep(" ", IndentCount)
+	local CurrentIndent = string_rep(IndentString, StackLevel)
+	local PreviousIndent = string_rep(IndentString, StackLevel - 1)
+
+	local function SerializeString(str)
+		return string_format("%q", str)
 	end
 
-	-- Find and disable detection remotes
-	local function DisableDetectionFunctions(parent)
-		for _, child in pairs(parent:GetDescendants()) do
-			if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then
-				local name = child.Name:lower()
-				if name:find("detect") or name:find("kick") or name:find("ban") or name:find("exploit") then
-					-- Hook the remote to prevent it from doing anything
-					if child:IsA("RemoteFunction") and child.OnClientInvoke then
-						local DetectionFunc = child.OnClientInvoke
-						if typeof(DetectionFunc) == "function" then
-							wax.shared.Hooks[DetectionFunc] = wax.shared.Hooking.HookFunction(
-								DetectionFunc,
-								function(action, info, nocrash)
-									coroutine.yield(coroutine.running())
-									return task.wait(9e9)
-								end
-							)
-						end
-					end
+	local function SerializeNumber(num)
+		if num ~= num then
+			return "0/0" -- NaN
+		elseif num == math.huge then
+			return PositiveInf
+		elseif num == -math.huge then
+			return NegativeInf
+		end
+		return tostring(num)
+	end
+
+	local function SerializeInstance(inst)
+		if not UseInstancePaths then
+			return `"Instance<{inst.ClassName}>"`
+		end
+
+		local path = {}
+		local current = inst
+		while current and current ~= game do
+			table_insert(path, 1, current.Name)
+			current = current.Parent
+		end
+
+		if #path == 0 then
+			return `"Instance<{inst.Name} (nil parent)>"`
+		end
+
+		local service = inst
+		local temp = inst
+		while temp.Parent and temp.Parent ~= game do
+			temp = temp.Parent
+		end
+		if temp.Parent == game then
+			service = temp
+		end
+
+		local result = `game:GetService("{service.ClassName}")`
+		local parts = {}
+		local c = inst
+		while c and c ~= service do
+			table_insert(parts, 1, c.Name)
+			c = c.Parent
+		end
+
+		for _, name in ipairs(parts) do
+			if string_match(name, "^[%a_][%w_]*$") then
+				result ..= `.{name}`
+			else
+				result ..= `[{SerializeString(name)}]`
+			end
+		end
+
+		return result
+	end
+
+	local Output = {}
+
+	if VisitedTables[inputTable] then
+		return `"<Cyclic Reference>"`
+	end
+	VisitedTables[inputTable] = true
+
+	-- Check if array
+	local isArray = IsArray
+	if not isArray then
+		local maxIndex = 0
+		local count = 0
+		for k, _ in pairs(inputTable) do
+			if type(k) == "number" and k > 0 and math.floor(k) == k then
+				maxIndex = math.max(maxIndex, k)
+			end
+			count += 1
+		end
+		isArray = (count > 0 and maxIndex == count)
+	end
+
+	table_insert(Output, "{" .. NewEntryString)
+
+	local isFirst = true
+
+	if isArray then
+		for i, value in ipairs(inputTable) do
+			if not isFirst then
+				table_insert(Output, "," .. NewEntryString)
+			end
+			isFirst = false
+
+			table_insert(Output, CurrentIndent)
+
+			local valueType = Type(value)
+			if valueType == "table" then
+				table_insert(Output, LuaEncode(value, {
+					Prettify = Prettify,
+					IndentCount = IndentCount,
+					FunctionsReturnRaw = FunctionsReturnRaw,
+					UseInstancePaths = UseInstancePaths,
+					SerializeMathHuge = SerializeMathHuge,
+					_StackLevel = StackLevel + 1,
+					_VisitedTables = VisitedTables,
+				}))
+			elseif valueType == "string" then
+				table_insert(Output, SerializeString(value))
+			elseif valueType == "number" then
+				table_insert(Output, SerializeNumber(value))
+			elseif valueType == "boolean" then
+				table_insert(Output, tostring(value))
+			elseif valueType == "Instance" then
+				table_insert(Output, SerializeInstance(value))
+			elseif valueType == "function" then
+				if FunctionsReturnRaw then
+					local info = debug.info(value, "n")
+					table_insert(Output, `"<Function: {info or "anonymous"}>"`)
+				else
+					table_insert(Output, `"<Function>"`)
 				end
+			elseif valueType == "nil" then
+				table_insert(Output, "nil")
+			elseif valueType == "Vector3" then
+				table_insert(Output, `Vector3.new({value.X}{ValueSeperator}{value.Y}{ValueSeperator}{value.Z})`)
+			elseif valueType == "Vector2" then
+				table_insert(Output, `Vector2.new({value.X}{ValueSeperator}{value.Y})`)
+			elseif valueType == "CFrame" then
+				local components = { value:GetComponents() }
+				table_insert(Output, `CFrame.new({table_concat(components, ValueSeperator)})`)
+			elseif valueType == "Color3" then
+				table_insert(Output, `Color3.new({value.R}{ValueSeperator}{value.G}{ValueSeperator}{value.B})`)
+			elseif valueType == "BrickColor" then
+				table_insert(Output, `BrickColor.new("{tostring(value)}")`)
+			elseif valueType == "EnumItem" then
+				table_insert(Output, tostring(value))
+			elseif valueType == "UDim" then
+				table_insert(Output, `UDim.new({value.Scale}{ValueSeperator}{value.Offset})`)
+			elseif valueType == "UDim2" then
+				table_insert(Output, `UDim2.new({value.X.Scale}{ValueSeperator}{value.X.Offset}{ValueSeperator}{value.Y.Scale}{ValueSeperator}{value.Y.Offset})`)
+			elseif valueType == "Ray" then
+				table_insert(Output, `Ray.new(Vector3.new({value.Origin.X}{ValueSeperator}{value.Origin.Y}{ValueSeperator}{value.Origin.Z}){ValueSeperator}Vector3.new({value.Direction.X}{ValueSeperator}{value.Direction.Y}{ValueSeperator}{value.Direction.Z}))`)
+			elseif valueType == "NumberRange" then
+				table_insert(Output, `NumberRange.new({value.Min}{ValueSeperator}{value.Max})`)
+			elseif valueType == "buffer" then
+				local bufStr = buffer.tostring(value)
+				table_insert(Output, `buffer.fromstring({SerializeString(bufStr)})`)
+			else
+				table_insert(Output, `"<{valueType}>"`)
+			end
+		end
+	else
+		for key, value in pairs(inputTable) do
+			if not isFirst then
+				table_insert(Output, "," .. NewEntryString)
+			end
+			isFirst = false
+
+			table_insert(Output, CurrentIndent)
+
+			-- Key
+			local keyType = Type(key)
+			if keyType == "string" then
+				if string_match(key, "^[%a_][%w_]*$") then
+					table_insert(Output, key .. " = ")
+				else
+					table_insert(Output, `[{SerializeString(key)}] = `)
+				end
+			elseif keyType == "number" then
+				table_insert(Output, `[{SerializeNumber(key)}] = `)
+			else
+				table_insert(Output, `[{SerializeString(tostring(key))}] = `)
+			end
+
+			-- Value
+			local valueType = Type(value)
+			if valueType == "table" then
+				table_insert(Output, LuaEncode(value, {
+					Prettify = Prettify,
+					IndentCount = IndentCount,
+					FunctionsReturnRaw = FunctionsReturnRaw,
+					UseInstancePaths = UseInstancePaths,
+					SerializeMathHuge = SerializeMathHuge,
+					_StackLevel = StackLevel + 1,
+					_VisitedTables = VisitedTables,
+				}))
+			elseif valueType == "string" then
+				table_insert(Output, SerializeString(value))
+			elseif valueType == "number" then
+				table_insert(Output, SerializeNumber(value))
+			elseif valueType == "boolean" then
+				table_insert(Output, tostring(value))
+			elseif valueType == "Instance" then
+				table_insert(Output, SerializeInstance(value))
+			elseif valueType == "function" then
+				if FunctionsReturnRaw then
+					local info = debug.info(value, "n")
+					table_insert(Output, `"<Function: {info or "anonymous"}>"`)
+				else
+					table_insert(Output, `"<Function>"`)
+				end
+			elseif valueType == "nil" then
+				table_insert(Output, "nil")
+			elseif valueType == "Vector3" then
+				table_insert(Output, `Vector3.new({value.X}{ValueSeperator}{value.Y}{ValueSeperator}{value.Z})`)
+			elseif valueType == "Vector2" then
+				table_insert(Output, `Vector2.new({value.X}{ValueSeperator}{value.Y})`)
+			elseif valueType == "CFrame" then
+				local components = { value:GetComponents() }
+				table_insert(Output, `CFrame.new({table_concat(components, ValueSeperator)})`)
+			elseif valueType == "Color3" then
+				table_insert(Output, `Color3.new({value.R}{ValueSeperator}{value.G}{ValueSeperator}{value.B})`)
+			elseif valueType == "BrickColor" then
+				table_insert(Output, `BrickColor.new("{tostring(value)}")`)
+			elseif valueType == "EnumItem" then
+				table_insert(Output, tostring(value))
+			elseif valueType == "UDim" then
+				table_insert(Output, `UDim.new({value.Scale}{ValueSeperator}{value.Offset})`)
+			elseif valueType == "UDim2" then
+				table_insert(Output, `UDim2.new({value.X.Scale}{ValueSeperator}{value.X.Offset}{ValueSeperator}{value.Y.Scale}{ValueSeperator}{value.Y.Offset})`)
+			elseif valueType == "buffer" then
+				local bufStr = buffer.tostring(value)
+				table_insert(Output, `buffer.fromstring({SerializeString(bufStr)})`)
+			else
+				table_insert(Output, `"<{valueType}>"`)
 			end
 		end
 	end
 
-	pcall(DisableDetectionFunctions, AdonisFolder)
+	table_insert(Output, NewEntryString .. PreviousIndent .. "}")
 
-	-- Hook getconnections to hide our connections
-	if getconnections then
-		for _, connection in pairs(getconnections(game:GetService("Players").LocalPlayer.Idled)) do
-			-- Keep connections alive but hidden
-		end
-	end
-
-	return true
+	return table_concat(Output)
 end
 
-return BypassAdonis
+return LuaEncode
 
 end)() end
 } -- [RefId] = Closure
@@ -4785,6 +4787,13 @@ local ObjectTree = {
                     "Src"
                 },
                 {
+                    {
+                        37,
+                        2,
+                        {
+                            "Window"
+                        }
+                    },
                     {
                         4,
                         2,
@@ -4824,17 +4833,17 @@ local ObjectTree = {
                                         },
                                         {
                                             {
-                                                10,
-                                                2,
-                                                {
-                                                    "Outgoing"
-                                                }
-                                            },
-                                            {
                                                 9,
                                                 2,
                                                 {
                                                     "Incoming"
+                                                }
+                                            },
+                                            {
+                                                10,
+                                                2,
+                                                {
+                                                    "Outgoing"
                                                 }
                                             }
                                         }
@@ -4865,10 +4874,10 @@ local ObjectTree = {
                         },
                         {
                             {
-                                21,
+                                25,
                                 2,
                                 {
-                                    "FileLog"
+                                    "SaveManager"
                                 }
                             },
                             {
@@ -4879,17 +4888,19 @@ local ObjectTree = {
                                 }
                             },
                             {
-                                25,
-                                2,
+                                26,
+                                1,
                                 {
-                                    "SaveManager"
-                                }
-                            },
-                            {
-                                20,
-                                2,
+                                    "Serializer"
+                                },
                                 {
-                                    "Connect"
+                                    {
+                                        27,
+                                        2,
+                                        {
+                                            "LuaEncode"
+                                        }
+                                    }
                                 }
                             },
                             {
@@ -4904,13 +4915,6 @@ local ObjectTree = {
                                         2,
                                         {
                                             "Sonner"
-                                        }
-                                    },
-                                    {
-                                        29,
-                                        2,
-                                        {
-                                            "Drag"
                                         }
                                     },
                                     {
@@ -4935,13 +4939,6 @@ local ObjectTree = {
                                         }
                                     },
                                     {
-                                        33,
-                                        2,
-                                        {
-                                            "ImageFetch"
-                                        }
-                                    },
-                                    {
                                         30,
                                         2,
                                         {
@@ -4954,7 +4951,49 @@ local ObjectTree = {
                                         {
                                             "Interface"
                                         }
+                                    },
+                                    {
+                                        33,
+                                        2,
+                                        {
+                                            "ImageFetch"
+                                        }
+                                    },
+                                    {
+                                        29,
+                                        2,
+                                        {
+                                            "Drag"
+                                        }
                                     }
+                                }
+                            },
+                            {
+                                21,
+                                2,
+                                {
+                                    "FileLog"
+                                }
+                            },
+                            {
+                                24,
+                                2,
+                                {
+                                    "Pagination"
+                                }
+                            },
+                            {
+                                22,
+                                2,
+                                {
+                                    "Hooking"
+                                }
+                            },
+                            {
+                                20,
+                                2,
+                                {
+                                    "Connect"
                                 }
                             },
                             {
@@ -4964,13 +5003,6 @@ local ObjectTree = {
                                     "Anticheats"
                                 },
                                 {
-                                    {
-                                        14,
-                                        2,
-                                        {
-                                            "Main"
-                                        }
-                                    },
                                     {
                                         15,
                                         1,
@@ -4986,14 +5018,14 @@ local ObjectTree = {
                                                 }
                                             }
                                         }
+                                    },
+                                    {
+                                        14,
+                                        2,
+                                        {
+                                            "Main"
+                                        }
                                     }
-                                }
-                            },
-                            {
-                                22,
-                                2,
-                                {
-                                    "Hooking"
                                 }
                             },
                             {
@@ -5018,37 +5050,7 @@ local ObjectTree = {
                                         }
                                     }
                                 }
-                            },
-                            {
-                                24,
-                                2,
-                                {
-                                    "Pagination"
-                                }
-                            },
-                            {
-                                26,
-                                1,
-                                {
-                                    "Serializer"
-                                },
-                                {
-                                    {
-                                        27,
-                                        2,
-                                        {
-                                            "LuaEncode"
-                                        }
-                                    }
-                                }
                             }
-                        }
-                    },
-                    {
-                        37,
-                        2,
-                        {
-                            "Window"
                         }
                     }
                 }
@@ -5069,22 +5071,22 @@ local LineOffsets = {
     [36] = 929,
     [32] = 1106,
     [35] = 1162,
-    [33] = 1257,
+    [19] = 1538,
     [22] = 1305,
     [29] = 1368,
     [24] = 1420,
-    [16] = 4707,
-    [11] = 3303,
-    [18] = 3407,
-    [31] = 4622,
-    [14] = 4575,
-    [9] = 4430,
-    [23] = 4212,
-    [25] = 4394,
-    [37] = 1538,
-    [19] = 3921,
-    [30] = 4128,
-    [27] = 3623
+    [27] = 4462,
+    [11] = 1745,
+    [37] = 1849,
+    [31] = 4377,
+    [30] = 4293,
+    [9] = 4148,
+    [23] = 3930,
+    [25] = 4112,
+    [33] = 1257,
+    [18] = 3616,
+    [14] = 3832,
+    [16] = 3879
 }
 
 -- Misc AOT variable imports
