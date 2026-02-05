@@ -1,0 +1,34 @@
+{
+    "bundle": {
+        "require_mode": "path"
+    },
+    "rules": [
+        {
+            "rule": "remove_spaces"
+        },
+        {
+            "rule": "remove_nil_declaration"
+        },
+        {
+            "rule": "compute_expression"
+        },
+        {
+            "rule": "remove_unused_if_branch"
+        },
+        {
+            "rule": "remove_unused_while"
+        },
+        {
+            "rule": "filter_after_early_return"
+        },
+        {
+            "rule": "remove_empty_do"
+        },
+        {
+            "rule": "rename_variables",
+            "globals": {
+                "mode": "all"
+            }
+        }
+    ]
+}

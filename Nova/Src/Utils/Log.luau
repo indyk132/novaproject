@@ -1,0 +1,180 @@
+local Log = {}
+Log.__index = Log
+
+--// Auto Ignore Constants \\--
+local SpamCallCountThreshold = 15
+local SpamTimeWindowSeconds = 1
+
+function Log.new(Instance, Type, Method, Index, CallingScript)
+	local NewLog = setmetatable({
+		Instance = Instance,
+		Type = Type,
+		Method = Method,
+		Index = Index,
+		Calls = {},
+		GameCalls = {},
+		SpamHistory = {},
+		Ignored = false,
+		Blocked = false,
+		Button = nil,
+	}, Log)
+
+	return NewLog
+end
+
+function DeepClone(orig, copies)
+	copies = copies or {}
+
+	if typeof(orig) == "Instance" then
+		return cloneref(orig)
+	elseif typeof(orig) == "userdata" then
+		if getmetatable(orig) then
+			return newproxy(true)
+		else
+			return newproxy()
+		end
+	elseif typeof(orig) == "function" then
+		if clonefunction then
+			return clonefunction(orig)
+		end
+		return orig
+	elseif type(orig) ~= "table" then
+		return orig
+	elseif copies[orig] then
+		return copies[orig]
+	end
+
+	local copy = {}
+	copies[orig] = copy
+
+	for key, value in pairs(orig) do
+		copy[DeepClone(key, copies)] = DeepClone(value, copies)
+	end
+
+	return setmetatable(copy, DeepClone(getmetatable(orig), copies))
+end
+
+function Log:IsOverSpamThreshold()
+	local Now = tick()
+	table.insert(self.SpamHistory, Now)
+
+	-- Remove old entries
+	local Cutoff = Now - SpamTimeWindowSeconds
+	while #self.SpamHistory > 0 and self.SpamHistory[1] < Cutoff do
+		table.remove(self.SpamHistory, 1)
+	end
+
+	if #self.SpamHistory >= SpamCallCountThreshold then
+		if not self.Ignored then
+			self:Ignore()
+			wax.shared.Sonner.warning(`Auto-ignored {self.Instance.Name} (spam detected)`)
+		end
+		return true
+	end
+
+	return false
+end
+
+function Log:Call(RawInfo)
+	if self.Ignored or self.Blocked then
+		return
+	end
+
+	local Success, Data = pcall(function()
+		return self:IsOverSpamThreshold()
+	end)
+
+	if Success and Data then
+		return
+	end
+
+	local Info = DeepClone(RawInfo)
+	Info.CreationTime = tick()
+
+	local Index = #self.Calls + 1
+	self.Calls[Index] = Info
+	if not Info.IsExecutor then
+		table.insert(self.GameCalls, Index)
+	end
+
+	if wax.shared.Communicator then
+		wax.shared.Communicator.Fire(wax.shared.Communicator, self.Instance, self.Type, #self.Calls)
+	end
+end
+
+function Log:Ignore()
+	if wax.shared.ActorCommunicator then
+		pcall(function()
+			wax.shared.ActorCommunicator:Fire("MainIgnore", self.Instance, self.Type)
+		end)
+	end
+
+	self.Ignored = not self.Ignored
+
+	local IgnoredRemoteList = wax.shared.Settings["IgnoredRemotes"]
+	if IgnoredRemoteList then
+		if self.Ignored then
+			IgnoredRemoteList:AddToList(self)
+		else
+			IgnoredRemoteList:RemoveFromList(self)
+		end
+	end
+end
+
+local ClassesConnectionsToggle = {
+	RemoteEvent = "OnClientEvent",
+	UnreliableRemoteEvent = "OnClientEvent",
+	BindableEvent = "Event",
+}
+
+function Log:SetConnectionsEnabled(enabled: boolean)
+	if not self.Instance or not ClassesConnectionsToggle[self.Instance.ClassName] then
+		return
+	end
+
+	local ConnectionName = ClassesConnectionsToggle[self.Instance.ClassName]
+	if self.Type ~= "Incoming" or not ConnectionName then
+		return
+	end
+
+	for _, Connection in pairs(getconnections(self.Instance[ConnectionName])) do
+		if enabled then
+			Connection:Enable()
+		else
+			Connection:Disable()
+		end
+	end
+end
+
+function Log:Block()
+	if wax.shared.ActorCommunicator then
+		pcall(function()
+			wax.shared.ActorCommunicator:Fire("MainBlock", self.Instance, self.Type)
+		end)
+	end
+
+	self.Blocked = not self.Blocked
+	Log:SetConnectionsEnabled(not self.Blocked)
+end
+
+function Log:SetButton(Instance, Name, Calls)
+	self.Button = {
+		Instance = Instance,
+		Name = Name,
+		Calls = Calls,
+	}
+end
+
+function Log:GetLatestCall()
+	return self.Calls[#self.Calls]
+end
+
+function Log:GetCallCount()
+	return #self.Calls
+end
+
+function Log:GetGameCallCount()
+	return #self.GameCalls
+end
+
+return Log

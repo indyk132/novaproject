@@ -1,0 +1,79 @@
+-- Actor Environment Template for Nova
+-- This code runs inside each Actor's Lua VM to intercept remotes there.
+-- NOVA_ACTOR_DATA is replaced at runtime with serialized configuration.
+
+local ActorData = NOVA_ACTOR_DATA
+
+local Token = ActorData.Token
+local IgnorePlayerModule = ActorData.IgnorePlayerModule
+local IgnoredRemotesDropdown = ActorData.IgnoredRemotesDropdown
+local UseAlternativeHooks = ActorData.UseAlternativeHooks
+local ExecutorSupport = ActorData.ExecutorSupport
+
+local ChannelID, RelayChannel = create_comm_channel()
+
+local MethodToClass = {
+	FireServer = { "RemoteEvent", "UnreliableRemoteEvent" },
+	InvokeServer = { "RemoteFunction" },
+	Fire = { "BindableEvent" },
+	Invoke = { "BindableFunction" },
+}
+
+local function ShouldIgnore(instance)
+	if IgnoredRemotesDropdown[instance.ClassName] then
+		return true
+	end
+
+	if IgnorePlayerModule then
+		local fullName = instance:GetFullName()
+		if string.find(fullName, "PlayerModule") or string.find(fullName, "PlayerScripts") then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- Hook __namecall in Actor VM
+local OldNamecall
+OldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(...)
+	local method = getnamecallmethod()
+	local self = (...)
+
+	if typeof(self) == "Instance" then
+		local className = self.ClassName
+		local validClasses = MethodToClass[method]
+
+		if validClasses and table.find(validClasses, className) then
+			if not ShouldIgnore(self) and not checkcaller() then
+				local args = { select(2, ...) }
+
+				RelayChannel:Fire("ActorLog", self, "Outgoing", {
+					Args = args,
+					Method = method,
+					IsExecutor = false,
+					Instance = self,
+				})
+			end
+		end
+	end
+
+	return OldNamecall(...)
+end))
+
+-- Listen for commands from main thread
+RelayChannel:Listen("Unload", function()
+	hookmetamethod(game, "__namecall", OldNamecall)
+end)
+
+RelayChannel:Listen("MainBlock", function(Instance, EventType)
+	-- Handle block sync from main thread
+end)
+
+RelayChannel:Listen("MainIgnore", function(Instance, EventType)
+	-- Handle ignore sync from main thread
+end)
+
+RelayChannel:Listen("MainSettingsSync", function(Setting, Value)
+	-- Handle settings sync from main thread
+end)
