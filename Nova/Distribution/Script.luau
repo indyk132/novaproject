@@ -9,6 +9,7 @@
     Authors: Nova Team
     Powered by Wax Bundler
 --]]
+
 -- ++++++++ WAX BUNDLED DATA BELOW ++++++++ --
 
 -- Will be used later for getting flattened globals
@@ -16,6 +17,468 @@ local ImportGlobals
 
 -- Holds direct closure data (defining this before the DOM tree for line debugging etc)
 local ClosureBindings = {
+    [2] = function()local wax,script,require=ImportGlobals(2)local ImportGlobals return (function(...)wax.shared.NovaStartTime = tick()
+
+local FileLogger = require(script.Utils.FileLog)
+
+-- Environment Services
+for _, Service in pairs({
+	"ContentProvider",
+	"CoreGui",
+	"TweenService",
+	"Players",
+	"RunService",
+	"HttpService",
+	"UserInputService",
+	"TextService",
+	"StarterGui",
+}) do
+	wax.shared[Service] = cloneref(game:GetService(Service))
+end
+
+wax.shared.NovaVerificationToken = wax.shared.HttpService:GenerateGUID()
+wax.shared.SaveManager = require(script.Utils.SaveManager)
+wax.shared.Settings = {}
+
+wax.shared.Hooks = {}
+
+-- Executor Support
+wax.shared.ExecutorName = identifyexecutor()
+wax.shared.ExecutorSupport = require(script.ExecutorSupport)
+
+-- Utils
+require(script.Utils.Connect)
+wax.shared.Hooking = require(script.Utils.Hooking)
+
+-- UI
+wax.shared.Sonner = require(script.Utils.UI.Sonner)
+
+-- Code Generation
+local LuaEncode = require(script.Utils.Serializer.LuaEncode)
+wax.shared.LuaEncode = LuaEncode
+
+wax.shared.CodeGen = require(script.Utils.CodeGen.Generator)
+
+-- Init Logs Table
+wax.shared.Logs = {
+	Incoming = {},
+	Outgoing = {},
+}
+
+-- Replay Support
+function wax.shared.ReplayCallInfo(CallInfo, TabType)
+	if not CallInfo or not CallInfo.Instance then
+		return
+	end
+
+	local Instance = CallInfo.Instance
+	local ClassName = Instance.ClassName
+	local Args = CallInfo.Args
+
+	if TabType == "Outgoing" then
+		if ClassName == "RemoteEvent" or ClassName == "UnreliableRemoteEvent" then
+			Instance:FireServer(table.unpack(Args))
+		elseif ClassName == "RemoteFunction" then
+			Instance:InvokeServer(table.unpack(Args))
+		elseif ClassName == "BindableEvent" then
+			Instance:Fire(table.unpack(Args))
+		elseif ClassName == "BindableFunction" then
+			Instance:Invoke(table.unpack(Args))
+		end
+	end
+end
+
+-- Unload Function
+function wax.shared.Unload()
+	-- Disconnect all connections
+	for _, Connection in pairs(wax.shared.Connections or {}) do
+		pcall(function()
+			Connection:Disconnect()
+		end)
+	end
+
+	-- Restore hooks
+	for Original, Hook in pairs(wax.shared.Hooks) do
+		pcall(function()
+			wax.shared.Hooking.RestoreFunction(Original)
+		end)
+	end
+
+	-- Restore namecall hook
+	if wax.shared.NamecallHook then
+		pcall(function()
+			wax.shared.Hooking.RestoreNamecall()
+		end)
+	end
+
+	if wax.shared.ActorCommunicator then
+		pcall(function()
+			wax.shared.ActorCommunicator:Fire("Unload")
+		end)
+	end
+
+	getgenv().NovaInitialized = false
+
+	wax.shared.Communicator:Destroy()
+	wax.shared.ScreenGui:Destroy()
+
+	wax.shared.Unloaded = true
+end
+
+local AnticheatData = require(script.Utils.Anticheats.Main)
+
+-- Communicator
+wax.shared.Communicator = Instance.new("BindableEvent")
+
+-- Setup logging connection
+wax.shared.SetupLoggingConnection = function()
+	if wax.shared.LogConnection then
+		wax.shared.LogConnection:Disconnect()
+	end
+
+	wax.shared.LogFileName = `Nova/Logs/{DateTime.now():ToIsoDate():gsub(":", "_")}.log`
+	local FileLog = FileLogger.new(wax.shared.LogFileName, FileLogger.LOG_LEVELS.INFO, true)
+
+	return function(RemoteInstance, Type, CallOrderInLog)
+		local LogEntry = wax.shared.Logs[Type][RemoteInstance]
+		if not LogEntry then
+			return
+		end
+
+		local Call = LogEntry.Calls[CallOrderInLog]
+		if not Call then
+			return
+		end
+
+		local ArgsString = ""
+		local Success, Encoded = pcall(LuaEncode, Call.Args, {
+			Prettify = false,
+			FunctionsReturnRaw = true,
+		})
+
+		if Success then
+			ArgsString = Encoded
+		end
+
+		FileLog:Log(FileLogger.LOG_LEVELS.INFO, `[{Type}] {RemoteInstance:GetFullName()} | Args: {ArgsString}`)
+	end
+end
+
+-- Execute on Teleport
+if wax.shared.SaveManager:GetState("ExecuteOnTeleport", false) then
+	pcall(function()
+		local QueueScript = `loadstring(game:HttpGet("NOVA_LOADSTRING_URL"))()`
+		local Success = pcall(queue_on_teleport, QueueScript)
+		if not Success then
+			pcall(queueonteleport, QueueScript)
+		end
+	end)
+end
+
+-- Anticheat Bypass
+if wax.shared.SaveManager:GetState("AnticheatBypass", true) and AnticheatData.Bypass then
+	local Success, Error = pcall(AnticheatData.Bypass)
+	if not Success then
+		warn("[Nova] Failed to apply anticheat bypass:", Error)
+	end
+end
+
+-- Initialize Window
+require(script.Window)
+
+-- Start Spy
+require(script.Spy.Init)
+
+-- Done
+local LoadTime = string.format("%.2f", tick() - wax.shared.NovaStartTime)
+wax.shared.Sonner.success(`Nova loaded in {LoadTime}s`)
+
+end)() end,
+    [3] = function()local wax,script,require=ImportGlobals(3)local ImportGlobals return (function(...)--[[
+	Lightweight checks for various executor functions.
+	Reports whether they are working or not.
+]]
+
+local ExecutorSupport = {
+	FailedChecks = {
+		Essential = {},
+		NonEssential = {},
+	},
+}
+
+local BrokenFeatures = {
+	["Volcano"] = { "oth", "run_on_actor" },
+	["Seliware"] = { "run_on_actor" },
+}
+
+local function CheckFFlagValue(Name: string, Value: any)
+	local Success, Result = pcall(getfflag, Name)
+	if not Success then
+		return false
+	end
+
+	if typeof(Result) == "boolean" then
+		return Result
+	end
+
+	if typeof(Result) == "string" then
+		return Result == tostring(Value)
+	end
+
+	return false
+end
+
+local function test(name, Callback, CheckType, Essential)
+	local TestFunction = not CheckType and Callback or function()
+		assert(typeof(Callback) == "function", string.format("%s is not a function.", name))
+		return "Passed nil check."
+	end
+
+	if Essential == nil then
+		Essential = true
+	end
+
+	local Success, Result
+	if BrokenFeatures[wax.shared.ExecutorName] and table.find(BrokenFeatures[wax.shared.ExecutorName], name) then
+		Success = false
+		Result = "This function/library is broken or can crash your game on this executor."
+	else
+		Success, Result = pcall(TestFunction)
+	end
+
+	ExecutorSupport[name] = {
+		IsWorking = Success,
+		Details = Result,
+		Essential = Essential,
+	}
+
+	if not Success then
+		if Essential then
+			table.insert(ExecutorSupport.FailedChecks.Essential, name)
+		else
+			table.insert(ExecutorSupport.FailedChecks.NonEssential, name)
+		end
+	end
+end
+
+-- FFlag Library
+test("getfflag", getfflag, true)
+test("setfflag", setfflag, true)
+
+-- Actor Library
+test("getactors", getactors, true)
+test("run_on_actor", run_on_actor, true)
+test("create_comm_channel", create_comm_channel, true)
+
+-- Closure Library
+test("hookfunction", hookfunction, true)
+test("hookmetamethod", hookmetamethod, true)
+test("newcclosure", newcclosure, true)
+test("iscclosure", iscclosure, true)
+test("clonefunction", clonefunction, true)
+test("getnamecallmethod", getnamecallmethod, true)
+
+-- Instance Library
+test("gethui", gethui, true, false)
+test("cloneref", cloneref, true)
+test("getinstances", getinstances, true, false)
+test("getnilinstances", getnilinstances, true, false)
+test("getconnections", getconnections, true, false)
+
+-- Script Library
+test("getscripts", getscripts, true, false)
+test("getcallingscript", getcallingscript, true, false)
+
+-- Thread / Debug
+test("checkcaller", checkcaller, true)
+test("getinfo", function()
+	return debug.info(1, "slnaf")
+end, false)
+
+-- Misc
+test("setclipboard", setclipboard, true)
+test("request", request, true, false)
+test("queue_on_teleport", queue_on_teleport, true, false)
+
+-- Other Tools
+test("decompile", decompile, true, false)
+test("oth", function()
+	return true
+end, false, false)
+
+-- Additional utility checks
+test("getgenv", getgenv, true)
+test("getrenv", getrenv, true, false)
+test("getrawmetatable", getrawmetatable, true)
+
+-- Parallel Luau fix detection
+task.defer(function()
+	if not ExecutorSupport["setfflag"].IsWorking and not ExecutorSupport["run_on_actor"].IsWorking then
+		return
+	end
+
+	local GameUsesActors = false
+	local CategoryToSearch = {}
+
+	if ExecutorSupport["getinstances"].IsWorking then
+		table.insert(CategoryToSearch, getinstances())
+	end
+
+	if ExecutorSupport["getnilinstances"].IsWorking then
+		table.insert(CategoryToSearch, getnilinstances())
+	end
+
+	for _, Category in CategoryToSearch do
+		if GameUsesActors then
+			break
+		end
+
+		for _, Instance in Category do
+			if not Instance:IsA("Actor") then
+				continue
+			end
+
+			GameUsesActors = true
+			break
+		end
+	end
+
+	if not GameUsesActors then
+		return
+	end
+
+	local bindable = Instance.new("BindableFunction")
+
+	function bindable.OnInvoke(response)
+		if response == "Enable Fix" then
+			setfflag("DebugRunParallelLuaOnMainThread", "true")
+			wax.shared.StarterGui:SetCore("SendNotification", {
+				Title = "Nova",
+				Text = "Please rejoin for the fix to take effect!",
+				Duration = math.huge,
+			})
+		end
+
+		bindable:Destroy()
+	end
+
+	wax.shared.StarterGui:SetCore("SendNotification", {
+		Title = "Nova",
+		Text = "This game may use remotes in a way that your executor can't intercept. You can enable the fix and rejoin to detect them.",
+		Duration = math.huge,
+		Callback = bindable,
+		Button1 = "Enable Fix",
+		Button2 = "Dismiss",
+	})
+end)
+
+return ExecutorSupport
+
+end)() end,
+    [4] = function()local wax,script,require=ImportGlobals(4)local ImportGlobals return (function(...)--[[
+	Nova Spy Initialization
+	Sets up all hooks for monitoring remote events.
+]]
+
+local LuaEncode = require(script.Parent.Parent.Utils.Serializer.LuaEncode)
+local CodeGen = require(script.Parent.Parent.Utils.CodeGen.Generator)
+
+local Hooks = script.Parent.Hooks
+
+-- Main Thread Hooks
+for _, Hook in Hooks.Default:GetChildren() do
+	task.spawn(require, Hook)
+end
+
+getgenv().NovaInitialized = true
+
+-- Actor support
+local ActorsUtils = script.Parent.Actors
+
+wax.shared.ActorsEnabled = (
+	wax.shared.ExecutorSupport["run_on_actor"].IsWorking
+	and wax.shared.ExecutorSupport["getactors"].IsWorking
+	and wax.shared.ExecutorSupport["create_comm_channel"].IsWorking
+)
+
+if wax.shared.ActorsEnabled then
+	local ActorEnvironmentCode = ActorsUtils.Environment.Value
+
+	local IgnorePlayerModule = wax.shared.SaveManager:GetState("IgnorePlayerModule", true)
+	local IgnoredRemotesDropdown = wax.shared.SaveManager:GetState("IgnoredRemotesDropdown", {
+		["BindableEvent"] = true,
+		["BindableFunction"] = true,
+	})
+
+	local AlternativeEnabled = wax.shared.SaveManager:GetState("UseAlternativeHooks", false)
+
+	local CommunicationChannelID, Channel = create_comm_channel()
+	wax.shared.ActorCommunicator = Channel
+
+	local ActorData = LuaEncode({
+		Token = wax.shared.NovaVerificationToken,
+		IgnorePlayerModule = IgnorePlayerModule,
+		IgnoredRemotesDropdown = IgnoredRemotesDropdown,
+		UseAlternativeHooks = AlternativeEnabled,
+		ExecutorSupport = wax.shared.ExecutorSupport,
+	})
+
+	ActorEnvironmentCode = ActorEnvironmentCode:gsub("NOVA_ACTOR_DATA", ActorData)
+
+	-- Actor Logs Sync Layer
+	local function ReconstructTable(Info, CyclicRefs)
+		local Reconstructed = {}
+
+		for Key, Value in Info do
+			if type(Value) == "table" then
+				if Value["__Function"] and Value["Validation"] == wax.shared.NovaVerificationToken then
+					local FunctionData = table.clone(Value)
+					FunctionData["__Function"] = nil
+					FunctionData["Validation"] = nil
+
+					Reconstructed[Key] = FunctionData
+				else
+					Reconstructed[Key] = ReconstructTable(Value, CyclicRefs)
+				end
+			else
+				Reconstructed[Key] = Value
+			end
+		end
+
+		return Reconstructed
+	end
+
+	-- Listen for actor events
+	Channel:Listen("ActorLog", function(RemoteInstance, EventType, CallInfo)
+		if not RemoteInstance or not EventType then
+			return
+		end
+
+		local Log = wax.shared.Logs[EventType][RemoteInstance]
+		if not Log then
+			Log = wax.shared.Log and wax.shared.Log.new(RemoteInstance, EventType, CallInfo.Method, nil, nil)
+			if Log then
+				wax.shared.Logs[EventType][RemoteInstance] = Log
+			end
+		end
+
+		if Log then
+			local ReconstructedInfo = ReconstructTable(CallInfo, {})
+			Log:Call(ReconstructedInfo)
+		end
+	end)
+
+	-- Run on all actors
+	for _, Actor in getactors() do
+		pcall(function()
+			run_on_actor(Actor, ActorEnvironmentCode, CommunicationChannelID)
+		end)
+	end
+end
+
+return {}
+
+end)() end,
     [10] = function()local wax,script,require=ImportGlobals(10)local ImportGlobals return (function(...)--[[
 	Nova - Outgoing Remote Hooks
 	Hooks FireServer, InvokeServer, Fire, Invoke via __namecall and function hooks.
@@ -652,110 +1115,6 @@ end
 return Sonner
 
 end)() end,
-    [4] = function()local wax,script,require=ImportGlobals(4)local ImportGlobals return (function(...)--[[
-	Nova Spy Initialization
-	Sets up all hooks for monitoring remote events.
-]]
-
-local LuaEncode = require(script.Parent.Parent.Utils.Serializer.LuaEncode)
-local CodeGen = require(script.Parent.Parent.Utils.CodeGen.Generator)
-
-local Hooks = script.Parent.Hooks
-
--- Main Thread Hooks
-for _, Hook in Hooks.Default:GetChildren() do
-	task.spawn(require, Hook)
-end
-
-getgenv().NovaInitialized = true
-
--- Actor support
-local ActorsUtils = script.Parent.Actors
-
-wax.shared.ActorsEnabled = (
-	wax.shared.ExecutorSupport["run_on_actor"].IsWorking
-	and wax.shared.ExecutorSupport["getactors"].IsWorking
-	and wax.shared.ExecutorSupport["create_comm_channel"].IsWorking
-)
-
-if wax.shared.ActorsEnabled then
-	local ActorEnvironmentCode = ActorsUtils.Environment.Value
-
-	local IgnorePlayerModule = wax.shared.SaveManager:GetState("IgnorePlayerModule", true)
-	local IgnoredRemotesDropdown = wax.shared.SaveManager:GetState("IgnoredRemotesDropdown", {
-		["BindableEvent"] = true,
-		["BindableFunction"] = true,
-	})
-
-	local AlternativeEnabled = wax.shared.SaveManager:GetState("UseAlternativeHooks", false)
-
-	local CommunicationChannelID, Channel = create_comm_channel()
-	wax.shared.ActorCommunicator = Channel
-
-	local ActorData = LuaEncode({
-		Token = wax.shared.NovaVerificationToken,
-		IgnorePlayerModule = IgnorePlayerModule,
-		IgnoredRemotesDropdown = IgnoredRemotesDropdown,
-		UseAlternativeHooks = AlternativeEnabled,
-		ExecutorSupport = wax.shared.ExecutorSupport,
-	})
-
-	ActorEnvironmentCode = ActorEnvironmentCode:gsub("NOVA_ACTOR_DATA", ActorData)
-
-	-- Actor Logs Sync Layer
-	local function ReconstructTable(Info, CyclicRefs)
-		local Reconstructed = {}
-
-		for Key, Value in Info do
-			if type(Value) == "table" then
-				if Value["__Function"] and Value["Validation"] == wax.shared.NovaVerificationToken then
-					local FunctionData = table.clone(Value)
-					FunctionData["__Function"] = nil
-					FunctionData["Validation"] = nil
-
-					Reconstructed[Key] = FunctionData
-				else
-					Reconstructed[Key] = ReconstructTable(Value, CyclicRefs)
-				end
-			else
-				Reconstructed[Key] = Value
-			end
-		end
-
-		return Reconstructed
-	end
-
-	-- Listen for actor events
-	Channel:Listen("ActorLog", function(RemoteInstance, EventType, CallInfo)
-		if not RemoteInstance or not EventType then
-			return
-		end
-
-		local Log = wax.shared.Logs[EventType][RemoteInstance]
-		if not Log then
-			Log = wax.shared.Log and wax.shared.Log.new(RemoteInstance, EventType, CallInfo.Method, nil, nil)
-			if Log then
-				wax.shared.Logs[EventType][RemoteInstance] = Log
-			end
-		end
-
-		if Log then
-			local ReconstructedInfo = ReconstructTable(CallInfo, {})
-			Log:Call(ReconstructedInfo)
-		end
-	end)
-
-	-- Run on all actors
-	for _, Actor in getactors() do
-		pcall(function()
-			run_on_actor(Actor, ActorEnvironmentCode, CommunicationChannelID)
-		end)
-	end
-end
-
-return {}
-
-end)() end,
     [32] = function()local wax,script,require=ImportGlobals(32)local ImportGlobals return (function(...)--[[
 	Icons Module for Nova
 	Fetches and manages Lucide icons for the UI.
@@ -810,183 +1169,6 @@ function Icons.ApplyIcon(imageLabel: ImageLabel, iconName: string)
 end
 
 return Icons
-
-end)() end,
-    [2] = function()local wax,script,require=ImportGlobals(2)local ImportGlobals return (function(...)wax.shared.NovaStartTime = tick()
-
-local FileLogger = require(script.Utils.FileLog)
-
--- Environment Services
-for _, Service in pairs({
-	"ContentProvider",
-	"CoreGui",
-	"TweenService",
-	"Players",
-	"RunService",
-	"HttpService",
-	"UserInputService",
-	"TextService",
-	"StarterGui",
-}) do
-	wax.shared[Service] = cloneref(game:GetService(Service))
-end
-
-wax.shared.NovaVerificationToken = wax.shared.HttpService:GenerateGUID()
-wax.shared.SaveManager = require(script.Utils.SaveManager)
-wax.shared.Settings = {}
-
-wax.shared.Hooks = {}
-
--- Executor Support
-wax.shared.ExecutorName = identifyexecutor()
-wax.shared.ExecutorSupport = require(script.ExecutorSupport)
-
--- Utils
-require(script.Utils.Connect)
-wax.shared.Hooking = require(script.Utils.Hooking)
-
--- UI
-wax.shared.Sonner = require(script.Utils.UI.Sonner)
-
--- Code Generation
-local LuaEncode = require(script.Utils.Serializer.LuaEncode)
-wax.shared.LuaEncode = LuaEncode
-
-wax.shared.CodeGen = require(script.Utils.CodeGen.Generator)
-
--- Init Logs Table
-wax.shared.Logs = {
-	Incoming = {},
-	Outgoing = {},
-}
-
--- Replay Support
-function wax.shared.ReplayCallInfo(CallInfo, TabType)
-	if not CallInfo or not CallInfo.Instance then
-		return
-	end
-
-	local Instance = CallInfo.Instance
-	local ClassName = Instance.ClassName
-	local Args = CallInfo.Args
-
-	if TabType == "Outgoing" then
-		if ClassName == "RemoteEvent" or ClassName == "UnreliableRemoteEvent" then
-			Instance:FireServer(table.unpack(Args))
-		elseif ClassName == "RemoteFunction" then
-			Instance:InvokeServer(table.unpack(Args))
-		elseif ClassName == "BindableEvent" then
-			Instance:Fire(table.unpack(Args))
-		elseif ClassName == "BindableFunction" then
-			Instance:Invoke(table.unpack(Args))
-		end
-	end
-end
-
--- Unload Function
-function wax.shared.Unload()
-	-- Disconnect all connections
-	for _, Connection in pairs(wax.shared.Connections or {}) do
-		pcall(function()
-			Connection:Disconnect()
-		end)
-	end
-
-	-- Restore hooks
-	for Original, Hook in pairs(wax.shared.Hooks) do
-		pcall(function()
-			wax.shared.Hooking.RestoreFunction(Original)
-		end)
-	end
-
-	-- Restore namecall hook
-	if wax.shared.NamecallHook then
-		pcall(function()
-			wax.shared.Hooking.RestoreNamecall()
-		end)
-	end
-
-	if wax.shared.ActorCommunicator then
-		pcall(function()
-			wax.shared.ActorCommunicator:Fire("Unload")
-		end)
-	end
-
-	getgenv().NovaInitialized = false
-
-	wax.shared.Communicator:Destroy()
-	wax.shared.ScreenGui:Destroy()
-
-	wax.shared.Unloaded = true
-end
-
-local AnticheatData = require(script.Utils.Anticheats.Main)
-
--- Communicator
-wax.shared.Communicator = Instance.new("BindableEvent")
-
--- Setup logging connection
-wax.shared.SetupLoggingConnection = function()
-	if wax.shared.LogConnection then
-		wax.shared.LogConnection:Disconnect()
-	end
-
-	wax.shared.LogFileName = `Nova/Logs/{DateTime.now():ToIsoDate():gsub(":", "_")}.log`
-	local FileLog = FileLogger.new(wax.shared.LogFileName, FileLogger.LOG_LEVELS.INFO, true)
-
-	return function(RemoteInstance, Type, CallOrderInLog)
-		local LogEntry = wax.shared.Logs[Type][RemoteInstance]
-		if not LogEntry then
-			return
-		end
-
-		local Call = LogEntry.Calls[CallOrderInLog]
-		if not Call then
-			return
-		end
-
-		local ArgsString = ""
-		local Success, Encoded = pcall(LuaEncode, Call.Args, {
-			Prettify = false,
-			FunctionsReturnRaw = true,
-		})
-
-		if Success then
-			ArgsString = Encoded
-		end
-
-		FileLog:Log(FileLogger.LOG_LEVELS.INFO, `[{Type}] {RemoteInstance:GetFullName()} | Args: {ArgsString}`)
-	end
-end
-
--- Execute on Teleport
-if wax.shared.SaveManager:GetState("ExecuteOnTeleport", false) then
-	pcall(function()
-		local QueueScript = `loadstring(game:HttpGet("NOVA_LOADSTRING_URL"))()`
-		local Success = pcall(queue_on_teleport, QueueScript)
-		if not Success then
-			pcall(queueonteleport, QueueScript)
-		end
-	end)
-end
-
--- Anticheat Bypass
-if wax.shared.SaveManager:GetState("AnticheatBypass", true) and AnticheatData.Bypass then
-	local Success, Error = pcall(AnticheatData.Bypass)
-	if not Success then
-		warn("[Nova] Failed to apply anticheat bypass:", Error)
-	end
-end
-
--- Initialize Window
-require(script.Window)
-
--- Start Spy
-require(script.Spy.Init)
-
--- Done
-local LoadTime = string.format("%.2f", tick() - wax.shared.NovaStartTime)
-wax.shared.Sonner.success(`Nova loaded in {LoadTime}s`)
 
 end)() end,
     [35] = function()local wax,script,require=ImportGlobals(35)local ImportGlobals return (function(...)--[[
@@ -1195,187 +1377,6 @@ end
 return Hooking
 
 end)() end,
-    [3] = function()local wax,script,require=ImportGlobals(3)local ImportGlobals return (function(...)--[[
-	Lightweight checks for various executor functions.
-	Reports whether they are working or not.
-]]
-
-local ExecutorSupport = {
-	FailedChecks = {
-		Essential = {},
-		NonEssential = {},
-	},
-}
-
-local BrokenFeatures = {
-	["Volcano"] = { "oth", "run_on_actor" },
-	["Seliware"] = { "run_on_actor" },
-}
-
-local function CheckFFlagValue(Name: string, Value: any)
-	local Success, Result = pcall(getfflag, Name)
-	if not Success then
-		return false
-	end
-
-	if typeof(Result) == "boolean" then
-		return Result
-	end
-
-	if typeof(Result) == "string" then
-		return Result == tostring(Value)
-	end
-
-	return false
-end
-
-local function test(name, Callback, CheckType, Essential)
-	local TestFunction = not CheckType and Callback or function()
-		assert(typeof(Callback) == "function", string.format("%s is not a function.", name))
-		return "Passed nil check."
-	end
-
-	if Essential == nil then
-		Essential = true
-	end
-
-	local Success, Result
-	if BrokenFeatures[wax.shared.ExecutorName] and table.find(BrokenFeatures[wax.shared.ExecutorName], name) then
-		Success = false
-		Result = "This function/library is broken or can crash your game on this executor."
-	else
-		Success, Result = pcall(TestFunction)
-	end
-
-	ExecutorSupport[name] = {
-		IsWorking = Success,
-		Details = Result,
-		Essential = Essential,
-	}
-
-	if not Success then
-		if Essential then
-			table.insert(ExecutorSupport.FailedChecks.Essential, name)
-		else
-			table.insert(ExecutorSupport.FailedChecks.NonEssential, name)
-		end
-	end
-end
-
--- FFlag Library
-test("getfflag", getfflag, true)
-test("setfflag", setfflag, true)
-
--- Actor Library
-test("getactors", getactors, true)
-test("run_on_actor", run_on_actor, true)
-test("create_comm_channel", create_comm_channel, true)
-
--- Closure Library
-test("hookfunction", hookfunction, true)
-test("hookmetamethod", hookmetamethod, true)
-test("newcclosure", newcclosure, true)
-test("iscclosure", iscclosure, true)
-test("clonefunction", clonefunction, true)
-test("getnamecallmethod", getnamecallmethod, true)
-
--- Instance Library
-test("gethui", gethui, true, false)
-test("cloneref", cloneref, true)
-test("getinstances", getinstances, true, false)
-test("getnilinstances", getnilinstances, true, false)
-test("getconnections", getconnections, true, false)
-
--- Script Library
-test("getscripts", getscripts, true, false)
-test("getcallingscript", getcallingscript, true, false)
-
--- Thread / Debug
-test("checkcaller", checkcaller, true)
-test("getinfo", function()
-	return debug.info(1, "slnaf")
-end, false)
-
--- Misc
-test("setclipboard", setclipboard, true)
-test("request", request, true, false)
-test("queue_on_teleport", queue_on_teleport, true, false)
-
--- Other Tools
-test("decompile", decompile, true, false)
-test("oth", function()
-	return true
-end, false, false)
-
--- Additional utility checks
-test("getgenv", getgenv, true)
-test("getrenv", getrenv, true, false)
-test("getrawmetatable", getrawmetatable, true)
-
--- Parallel Luau fix detection
-task.defer(function()
-	if not ExecutorSupport["setfflag"].IsWorking and not ExecutorSupport["run_on_actor"].IsWorking then
-		return
-	end
-
-	local GameUsesActors = false
-	local CategoryToSearch = {}
-
-	if ExecutorSupport["getinstances"].IsWorking then
-		table.insert(CategoryToSearch, getinstances())
-	end
-
-	if ExecutorSupport["getnilinstances"].IsWorking then
-		table.insert(CategoryToSearch, getnilinstances())
-	end
-
-	for _, Category in CategoryToSearch do
-		if GameUsesActors then
-			break
-		end
-
-		for _, Instance in Category do
-			if not Instance:IsA("Actor") then
-				continue
-			end
-
-			GameUsesActors = true
-			break
-		end
-	end
-
-	if not GameUsesActors then
-		return
-	end
-
-	local bindable = Instance.new("BindableFunction")
-
-	function bindable.OnInvoke(response)
-		if response == "Enable Fix" then
-			setfflag("DebugRunParallelLuaOnMainThread", "true")
-			wax.shared.StarterGui:SetCore("SendNotification", {
-				Title = "Nova",
-				Text = "Please rejoin for the fix to take effect!",
-				Duration = math.huge,
-			})
-		end
-
-		bindable:Destroy()
-	end
-
-	wax.shared.StarterGui:SetCore("SendNotification", {
-		Title = "Nova",
-		Text = "This game may use remotes in a way that your executor can't intercept. You can enable the fix and rejoin to detect them.",
-		Duration = math.huge,
-		Callback = bindable,
-		Button1 = "Enable Fix",
-		Button2 = "Dismiss",
-	})
-end)
-
-return ExecutorSupport
-
-end)() end,
     [29] = function()local wax,script,require=ImportGlobals(29)local ImportGlobals return (function(...)--[[
 	Drag Module for Nova
 	Enables drag functionality on UI frames.
@@ -1544,255 +1545,6 @@ function Pagination:PreviousPage()
 end
 
 return Pagination
-
-end)() end,
-    [9] = function()local wax,script,require=ImportGlobals(9)local ImportGlobals return (function(...)--[[
-	Nova - Incoming Remote Hooks
-	Hooks OnClientEvent connections to monitor incoming remote calls.
-]]
-
-local Log = require(script.Parent.Parent.Parent.Parent.Utils.Log)
-
-local IgnorePlayerModule = wax.shared.SaveManager:GetState("IgnorePlayerModule", true)
-local IgnoredRemotesDropdown = wax.shared.SaveManager:GetState("IgnoredRemotesDropdown", {
-	["BindableEvent"] = true,
-	["BindableFunction"] = true,
-})
-
-local ClassToConnection = {
-	RemoteEvent = "OnClientEvent",
-	UnreliableRemoteEvent = "OnClientEvent",
-	RemoteFunction = "OnClientInvoke",
-	BindableEvent = "Event",
-	BindableFunction = "OnInvoke",
-}
-
-local function ShouldIgnore(instance)
-	if instance == wax.shared.Communicator then
-		return true
-	end
-
-	if IgnoredRemotesDropdown[instance.ClassName] then
-		return true
-	end
-
-	if IgnorePlayerModule then
-		local fullName = instance:GetFullName()
-		if string.find(fullName, "PlayerModule") or string.find(fullName, "PlayerScripts") then
-			return true
-		end
-	end
-
-	return false
-end
-
-local function GetCallingScript()
-	if not getcallingscript then
-		return nil
-	end
-
-	local success, result = pcall(getcallingscript)
-	return success and result or nil
-end
-
-local function ProcessIncomingCall(instance, method, args)
-	if ShouldIgnore(instance) then
-		return
-	end
-
-	local LogEntry = wax.shared.Logs.Incoming[instance]
-	if not LogEntry then
-		LogEntry = Log.new(instance, "Incoming", method, nil, GetCallingScript())
-		wax.shared.Logs.Incoming[instance] = LogEntry
-	end
-
-	local CallInfo = {
-		Args = args,
-		Method = method,
-		IsExecutor = false,
-		Instance = instance,
-		Origin = GetCallingScript(),
-	}
-
-	LogEntry:Call(CallInfo)
-end
-
--- Hook remote events for incoming signals
-local function HookRemote(remote)
-	if ShouldIgnore(remote) then
-		return
-	end
-
-	local className = remote.ClassName
-	local connectionName = ClassToConnection[className]
-
-	if not connectionName then
-		return
-	end
-
-	-- For RemoteEvent/UnreliableRemoteEvent - monitor OnClientEvent
-	if className == "RemoteEvent" or className == "UnreliableRemoteEvent" then
-		wax.shared.Connect(remote[connectionName]:Connect(function(...)
-			local args = { ... }
-			ProcessIncomingCall(remote, connectionName, args)
-		end))
-	end
-
-	-- For RemoteFunction - wrap OnClientInvoke
-	if className == "RemoteFunction" then
-		local originalInvoke = remote.OnClientInvoke
-		if originalInvoke then
-			remote.OnClientInvoke = function(...)
-				local args = { ... }
-				ProcessIncomingCall(remote, "OnClientInvoke", args)
-				return originalInvoke(...)
-			end
-		end
-	end
-end
-
--- Hook existing remotes
-local function ScanAndHookRemotes()
-	local services = {
-		game:GetService("ReplicatedStorage"),
-		game:GetService("Workspace"),
-	}
-
-	-- Also check nil instances if available
-	if getnilinstances then
-		local success, nilInstances = pcall(getnilinstances)
-		if success and nilInstances then
-			for _, inst in pairs(nilInstances) do
-				if inst:IsA("RemoteEvent") or inst:IsA("RemoteFunction") or inst:IsA("UnreliableRemoteEvent") then
-					pcall(HookRemote, inst)
-				end
-			end
-		end
-	end
-
-	for _, service in pairs(services) do
-		for _, descendant in pairs(service:GetDescendants()) do
-			if descendant:IsA("RemoteEvent") or descendant:IsA("RemoteFunction") or descendant:IsA("UnreliableRemoteEvent") then
-				pcall(HookRemote, descendant)
-			end
-		end
-
-		-- Watch for new remotes
-		wax.shared.Connect(service.DescendantAdded:Connect(function(descendant)
-			if descendant:IsA("RemoteEvent") or descendant:IsA("RemoteFunction") or descendant:IsA("UnreliableRemoteEvent") then
-				task.defer(HookRemote, descendant)
-			end
-		end))
-	end
-end
-
-task.spawn(ScanAndHookRemotes)
-
-return {}
-
-end)() end,
-    [11] = function()local wax,script,require=ImportGlobals(11)local ImportGlobals return (function(...)--[[
-	Nova Spy Initialization
-	Sets up all hooks for monitoring remote events.
-]]
-
-local LuaEncode = require(script.Parent.Parent.Utils.Serializer.LuaEncode)
-local CodeGen = require(script.Parent.Parent.Utils.CodeGen.Generator)
-
-local Hooks = script.Parent.Hooks
-
--- Main Thread Hooks
-for _, Hook in Hooks.Default:GetChildren() do
-	task.spawn(require, Hook)
-end
-
-getgenv().NovaInitialized = true
-
--- Actor support
-local ActorsUtils = script.Parent.Actors
-
-wax.shared.ActorsEnabled = (
-	wax.shared.ExecutorSupport["run_on_actor"].IsWorking
-	and wax.shared.ExecutorSupport["getactors"].IsWorking
-	and wax.shared.ExecutorSupport["create_comm_channel"].IsWorking
-)
-
-if wax.shared.ActorsEnabled then
-	local ActorEnvironmentCode = ActorsUtils.Environment.Value
-
-	local IgnorePlayerModule = wax.shared.SaveManager:GetState("IgnorePlayerModule", true)
-	local IgnoredRemotesDropdown = wax.shared.SaveManager:GetState("IgnoredRemotesDropdown", {
-		["BindableEvent"] = true,
-		["BindableFunction"] = true,
-	})
-
-	local AlternativeEnabled = wax.shared.SaveManager:GetState("UseAlternativeHooks", false)
-
-	local CommunicationChannelID, Channel = create_comm_channel()
-	wax.shared.ActorCommunicator = Channel
-
-	local ActorData = LuaEncode({
-		Token = wax.shared.NovaVerificationToken,
-		IgnorePlayerModule = IgnorePlayerModule,
-		IgnoredRemotesDropdown = IgnoredRemotesDropdown,
-		UseAlternativeHooks = AlternativeEnabled,
-		ExecutorSupport = wax.shared.ExecutorSupport,
-	})
-
-	ActorEnvironmentCode = ActorEnvironmentCode:gsub("NOVA_ACTOR_DATA", ActorData)
-
-	-- Actor Logs Sync Layer
-	local function ReconstructTable(Info, CyclicRefs)
-		local Reconstructed = {}
-
-		for Key, Value in Info do
-			if type(Value) == "table" then
-				if Value["__Function"] and Value["Validation"] == wax.shared.NovaVerificationToken then
-					local FunctionData = table.clone(Value)
-					FunctionData["__Function"] = nil
-					FunctionData["Validation"] = nil
-
-					Reconstructed[Key] = FunctionData
-				else
-					Reconstructed[Key] = ReconstructTable(Value, CyclicRefs)
-				end
-			else
-				Reconstructed[Key] = Value
-			end
-		end
-
-		return Reconstructed
-	end
-
-	-- Listen for actor events
-	Channel:Listen("ActorLog", function(RemoteInstance, EventType, CallInfo)
-		if not RemoteInstance or not EventType then
-			return
-		end
-
-		local Log = wax.shared.Logs[EventType][RemoteInstance]
-		if not Log then
-			Log = wax.shared.Log and wax.shared.Log.new(RemoteInstance, EventType, CallInfo.Method, nil, nil)
-			if Log then
-				wax.shared.Logs[EventType][RemoteInstance] = Log
-			end
-		end
-
-		if Log then
-			local ReconstructedInfo = ReconstructTable(CallInfo, {})
-			Log:Call(ReconstructedInfo)
-		end
-	end)
-
-	-- Run on all actors
-	for _, Actor in getactors() do
-		pcall(function()
-			run_on_actor(Actor, ActorEnvironmentCode, CommunicationChannelID)
-		end)
-	end
-end
-
-return {}
 
 end)() end,
     [37] = function()local wax,script,require=ImportGlobals(37)local ImportGlobals return (function(...)--[[
@@ -2810,6 +2562,28 @@ wax.shared.Connect(wax.shared.UserInputService.InputBegan:Connect(function(input
 	end
 end))
 
+-- Close info dropdown on click outside
+wax.shared.Connect(wax.shared.UserInputService.InputBegan:Connect(function(input)
+	if not CurrentInfoDropdown then return end
+	if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.MouseButton2 then return end
+
+	local pos = input.Position
+	local function isOver(frame)
+		local ap, as = frame.AbsolutePosition, frame.AbsoluteSize
+		return pos.X >= ap.X and pos.X <= ap.X + as.X and pos.Y >= ap.Y and pos.Y <= ap.Y + as.Y
+	end
+
+	if isOver(InfoDropdownFrame) or isOver(CurrentInfoDropdown.Parent) then
+		return
+	end
+
+	task.defer(function()
+		if CurrentInfoDropdown then
+			CurrentInfoDropdown:Close()
+		end
+	end)
+end))
+
 function ShowLog(logEntry)
 	-- Clear current logs list
 	for _, child in ipairs(LogsList:GetChildren()) do
@@ -3187,6 +2961,9 @@ local closeIcon = Interface.New("ImageLabel", {
 Icons.ApplyIcon(closeIcon, "x")
 CloseInfoBtn.MouseButton1Click:Connect(function()
 	InfoFrame.Visible = false
+	if CurrentInfoDropdown then
+		CurrentInfoDropdown:Close()
+	end
 end)
 
 -- Top tabs bar (Arguments / Code / Function Info)
@@ -3348,364 +3125,377 @@ local BottomBar = Interface.New("Frame", {
 local CurrentDetailLogEntry = nil
 local CurrentDetailCallInfo = nil
 
--- Active bottom dropdown state
-local ActiveBottomDropdown = nil
-local BottomDropdownButtons = {} -- tracks all btn + menu frames to ignore clicks on them
+-- Shared dropdown menu frame (Cobalt-style: single shared frame repositioned per button)
+local CurrentInfoDropdown = nil -- tracks which dropdown data is active
+local InfoDropdownFrame = Interface.New("Frame", {
+	AutomaticSize = Enum.AutomaticSize.XY,
+	BackgroundColor3 = Theme.Surface,
+	ZIndex = 10000,
+	Visible = false,
+	Parent = ScreenGui,
+	["UICorner"] = { CornerRadius = UDim.new(0, 6) },
+	["UIListLayout"] = {
+		FillDirection = Enum.FillDirection.Vertical,
+		HorizontalAlignment = Enum.HorizontalAlignment.Left,
+		Padding = UDim.new(0, 0),
+	},
+	["UIPadding"] = {
+		PaddingLeft = UDim.new(0, 4),
+		PaddingRight = UDim.new(0, 4),
+		PaddingTop = UDim.new(0, 4),
+		PaddingBottom = UDim.new(0, 4),
+	},
+	["UIStroke"] = {
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+		Color = Theme.Border,
+		Thickness = 1,
+	},
+})
 
-local function CloseBottomDropdown()
-	if ActiveBottomDropdown then
-		ActiveBottomDropdown.Visible = false
-		ActiveBottomDropdown = nil
+local function CreateInfoDropdownButton(iconName, title, options)
+	local DropdownData = {
+		Parent = nil,
+		Options = {},
+	}
+
+	local function BuildDropdownItems()
+		for obj, _ in pairs(DropdownData.Options) do
+			obj:Destroy()
+		end
+		DropdownData.Options = {}
+
+		for order, data in ipairs(options) do
+			-- Skip items with failed conditions
+			if data.Condition and not data.Condition() then
+				continue
+			end
+
+			local itemBtn = Interface.New("TextButton", {
+				BackgroundColor3 = Theme.SurfaceHover,
+				BackgroundTransparency = 1,
+				LayoutOrder = order,
+				Size = UDim2.new(1, 0, 0, 30),
+				Text = "",
+				ZIndex = 10001,
+				["UICorner"] = { CornerRadius = UDim.new(0, 6) },
+				["UIPadding"] = {
+					PaddingBottom = UDim.new(0, 6),
+					PaddingLeft = UDim.new(0, 6),
+					PaddingRight = UDim.new(0, 6),
+					PaddingTop = UDim.new(0, 6),
+				},
+			})
+
+			local itemIcon = Interface.New("ImageLabel", {
+				BackgroundTransparency = 1,
+				Size = UDim2.fromOffset(14, 14),
+				Position = UDim2.new(0, 0, 0.5, 0),
+				AnchorPoint = Vector2.new(0, 0.5),
+				ImageColor3 = Theme.TextMuted,
+				ZIndex = 10002,
+				Parent = itemBtn,
+			})
+			Icons.ApplyIcon(itemIcon, data.Icon)
+
+			Interface.New("TextLabel", {
+				BackgroundTransparency = 1,
+				Position = UDim2.fromOffset(20, 0),
+				Size = UDim2.new(1, -20, 1, 0),
+				Text = typeof(data.Text) == "function" and data.Text() or data.Text,
+				TextColor3 = Theme.Text,
+				TextSize = 13,
+				Font = Enum.Font.GothamMedium,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				ZIndex = 10002,
+				Parent = itemBtn,
+			})
+
+			itemBtn.MouseEnter:Connect(function()
+				wax.shared.TweenService:Create(itemBtn, TweenInfo.new(0.1), {
+					BackgroundTransparency = 0,
+				}):Play()
+			end)
+			itemBtn.MouseLeave:Connect(function()
+				wax.shared.TweenService:Create(itemBtn, TweenInfo.new(0.1), {
+					BackgroundTransparency = 1,
+				}):Play()
+			end)
+			itemBtn.MouseButton1Click:Connect(function()
+				itemBtn.BackgroundTransparency = 1
+				if data.Callback then
+					data.Callback()
+				end
+				DropdownData:Close()
+			end)
+
+			DropdownData.Options[itemBtn] = data
+		end
 	end
-end
 
-local function CreateBottomDropdownButton(text, iconName, optionsBuilder)
+	function DropdownData:Open()
+		if CurrentInfoDropdown == DropdownData then
+			return
+		end
+
+		if CurrentInfoDropdown then
+			CurrentInfoDropdown:Close()
+		end
+
+		CurrentInfoDropdown = DropdownData
+
+		-- Build items
+		BuildDropdownItems()
+
+		-- Parent items into the shared frame
+		for obj, _ in pairs(DropdownData.Options) do
+			obj.Parent = InfoDropdownFrame
+		end
+
+		-- Position: above the button
+		local scale = GetDPIScale()
+		InfoDropdownFrame.Position = UDim2.fromOffset(
+			DropdownData.Parent.AbsolutePosition.X / scale,
+			(DropdownData.Parent.AbsolutePosition.Y + DropdownData.Parent.AbsoluteSize.Y) / scale
+		)
+		InfoDropdownFrame.Visible = true
+	end
+
+	function DropdownData:Toggle()
+		if CurrentInfoDropdown == DropdownData then
+			DropdownData:Close()
+			return
+		end
+		DropdownData:Open()
+	end
+
+	function DropdownData:Close()
+		if CurrentInfoDropdown ~= DropdownData then
+			return
+		end
+
+		InfoDropdownFrame.Visible = false
+		for obj, _ in pairs(DropdownData.Options) do
+			obj.Parent = nil
+		end
+		CurrentInfoDropdown = nil
+	end
+
+	-- Create the button
 	local btn = Interface.New("TextButton", {
-		Text = "",
-		BackgroundColor3 = Theme.SurfaceHover,
-		Size = UDim2.new(0, 0, 0, 26),
 		AutomaticSize = Enum.AutomaticSize.X,
-		AutoButtonColor = false,
+		BackgroundColor3 = Theme.SurfaceHover,
+		BackgroundTransparency = 1,
+		Size = UDim2.new(0, 0, 0, 26),
+		Text = "",
 		ZIndex = 53,
 		Parent = BottomBar,
-		["UICorner"] = { CornerRadius = UDim.new(0, 5) },
+		["UICorner"] = { CornerRadius = UDim.new(0, 6) },
 		["UIPadding"] = {
 			PaddingLeft = UDim.new(0, 8),
-			PaddingRight = UDim.new(0, 10),
+			PaddingRight = UDim.new(0, 8),
+			PaddingTop = UDim.new(0, 4),
+			PaddingBottom = UDim.new(0, 4),
+		},
+		["UIStroke"] = {
+			Color = Theme.Border,
+			Thickness = 1,
+			ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
 		},
 	})
 
-	local ico = Interface.New("ImageLabel", {
+	DropdownData.Parent = btn
+
+	local btnIcon = Interface.New("ImageLabel", {
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(12, 12),
+		Size = UDim2.fromOffset(14, 14),
 		Position = UDim2.new(0, 0, 0.5, 0),
 		AnchorPoint = Vector2.new(0, 0.5),
 		ImageColor3 = Theme.TextMuted,
 		ZIndex = 54,
 		Parent = btn,
 	})
-	Icons.ApplyIcon(ico, iconName)
+	Icons.ApplyIcon(btnIcon, iconName)
 
 	Interface.New("TextLabel", {
 		BackgroundTransparency = 1,
-		Size = UDim2.new(0, 0, 1, 0),
+		Size = UDim2.fromScale(0, 1),
+		Position = UDim2.fromOffset(18, 0),
 		AutomaticSize = Enum.AutomaticSize.X,
-		Position = UDim2.new(0, 16, 0, 0),
-		Text = text,
+		Text = title,
 		TextColor3 = Theme.Text,
-		TextSize = 11,
+		TextSize = 13,
 		Font = Enum.Font.GothamMedium,
 		ZIndex = 54,
 		Parent = btn,
 	})
 
-	-- Chevron indicator
-	local chevron = Interface.New("ImageLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(8, 8),
-		Position = UDim2.new(1, 2, 0.5, 0),
-		AnchorPoint = Vector2.new(0, 0.5),
-		ImageColor3 = Theme.TextMuted,
-		ZIndex = 54,
-		Parent = btn,
-	})
-	Icons.ApplyIcon(chevron, "chevron-up")
-
-	-- Dropdown menu
-	local dropdownMenu = Interface.New("Frame", {
-		BackgroundColor3 = Theme.Surface,
-		Size = UDim2.fromOffset(170, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		Visible = false,
-		ZIndex = 200,
-		Parent = ScreenGui,
-		["UICorner"] = { CornerRadius = UDim.new(0, 6) },
-		["UIStroke"] = {
-			Color = Theme.Border,
-			Thickness = 1,
-		},
-		["UIListLayout"] = {
-			FillDirection = Enum.FillDirection.Vertical,
-			Padding = UDim.new(0, 0),
-		},
-		["UIPadding"] = {
-			PaddingTop = UDim.new(0, 4),
-			PaddingBottom = UDim.new(0, 4),
-		},
-	})
-
-	local function RebuildOptions()
-		-- Clear old items
-		for _, child in ipairs(dropdownMenu:GetChildren()) do
-			if child:IsA("TextButton") then
-				child:Destroy()
-			end
-		end
-
-		local options = optionsBuilder()
-		for _, opt in ipairs(options) do
-			-- Skip if condition fails
-			if opt.Condition and not opt.Condition() then
-				continue
-			end
-
-			local item = Interface.New("TextButton", {
-				Text = "",
-				BackgroundTransparency = 1,
-				Size = UDim2.new(1, 0, 0, 28),
-				AutoButtonColor = false,
-				ZIndex = 201,
-				Parent = dropdownMenu,
-			})
-
-			local optIco = Interface.New("ImageLabel", {
-				BackgroundTransparency = 1,
-				Size = UDim2.fromOffset(14, 14),
-				Position = UDim2.new(0, 10, 0.5, 0),
-				AnchorPoint = Vector2.new(0, 0.5),
-				ImageColor3 = Theme.TextMuted,
-				ZIndex = 202,
-				Parent = item,
-			})
-			Icons.ApplyIcon(optIco, opt.Icon)
-
-			Interface.New("TextLabel", {
-				BackgroundTransparency = 1,
-				Size = UDim2.new(1, -34, 1, 0),
-				Position = UDim2.new(0, 30, 0, 0),
-				Text = opt.Text,
-				TextColor3 = Theme.Text,
-				TextSize = 12,
-				Font = Enum.Font.GothamMedium,
-				TextXAlignment = Enum.TextXAlignment.Left,
-				ZIndex = 202,
-				Parent = item,
-			})
-
-			item.MouseEnter:Connect(function()
-				item.BackgroundTransparency = 0
-				item.BackgroundColor3 = Theme.SurfaceHover
-			end)
-			item.MouseLeave:Connect(function()
-				item.BackgroundTransparency = 1
-			end)
-
-			item.MouseButton1Click:Connect(function()
-				CloseBottomDropdown()
-				if opt.Callback then
-					opt.Callback()
-				end
-			end)
-		end
-	end
-
-	Helper.HoverEffect(btn, Theme.Border, Theme.SurfaceHover)
-	btn.MouseButton1Click:Connect(function()
-		if ActiveBottomDropdown == dropdownMenu then
-			CloseBottomDropdown()
-			return
-		end
-		CloseBottomDropdown()
-
-		RebuildOptions()
-
-		-- Position above the button
-		local absPos = btn.AbsolutePosition
-		local absSize = btn.AbsoluteSize
-		local scale = GetDPIScale()
-		dropdownMenu.Position = UDim2.fromOffset(absPos.X / scale, (absPos.Y - 4) / scale)
-		dropdownMenu.AnchorPoint = Vector2.new(0, 1)
-		dropdownMenu.Visible = true
-		ActiveBottomDropdown = dropdownMenu
+	btn.MouseEnter:Connect(function()
+		wax.shared.TweenService:Create(btn, TweenInfo.new(0.1), {
+			BackgroundTransparency = 0,
+		}):Play()
 	end)
+	btn.MouseLeave:Connect(function()
+		wax.shared.TweenService:Create(btn, TweenInfo.new(0.1), {
+			BackgroundTransparency = 1,
+		}):Play()
+	end)
+	btn.MouseButton1Click:Connect(DropdownData.Toggle)
 
-	table.insert(BottomDropdownButtons, { Button = btn, Menu = dropdownMenu })
-	return btn, dropdownMenu
+	return DropdownData
 end
-
--- Close dropdown on click elsewhere
-local function IsMouseOverFrame(frame)
-	local mousePos = wax.shared.UserInputService:GetMouseLocation()
-	local absPos = frame.AbsolutePosition
-	local absSize = frame.AbsoluteSize
-	return mousePos.X >= absPos.X
-		and mousePos.X <= absPos.X + absSize.X
-		and mousePos.Y >= absPos.Y
-		and mousePos.Y <= absPos.Y + absSize.Y
-end
-
-wax.shared.Connect(wax.shared.UserInputService.InputBegan:Connect(function(input)
-	if not ActiveBottomDropdown then return end
-	if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.MouseButton2 then return end
-
-	-- Don't close if clicking on any of our buttons or the active menu
-	for _, data in ipairs(BottomDropdownButtons) do
-		if IsMouseOverFrame(data.Button) or (data.Menu.Visible and IsMouseOverFrame(data.Menu)) then
-			return
-		end
-	end
-
-	task.defer(CloseBottomDropdown)
-end))
 
 -- ===== CODE dropdown =====
-CreateBottomDropdownButton("Code", "code", function()
-	return {
-		{
-			Text = "Calling Code",
-			Icon = "forward",
-			Callback = function()
-				if not (CurrentDetailLogEntry and CurrentDetailCallInfo) then
-					wax.shared.Sonner.info("No call details available")
-					return
-				end
-				local code = CodeGen.GenerateCode(CurrentDetailLogEntry, CurrentDetailCallInfo)
-				local success = pcall(setclipboard, code)
-				if success then
-					wax.shared.Sonner.success("Copied calling code")
-				end
-			end,
-		},
-		{
-			Text = "Intercept Code",
-			Icon = "shield-alert",
-			Callback = function()
-				if not CurrentDetailLogEntry then
-					wax.shared.Sonner.info("No call details available")
-					return
-				end
-				local code = CodeGen.GenerateInterceptCode(CurrentDetailLogEntry)
-				local success = pcall(setclipboard, code)
-				if success then
-					wax.shared.Sonner.success("Copied intercept code")
-				end
-			end,
-		},
-	}
-end)
+CreateInfoDropdownButton("code", "Code", {
+	{
+		Text = "Calling Code",
+		Icon = "forward",
+		Callback = function()
+			if not (CurrentDetailLogEntry and CurrentDetailCallInfo) then
+				wax.shared.Sonner.info("No call details available")
+				return
+			end
+			local code = CodeGen.GenerateCode(CurrentDetailLogEntry, CurrentDetailCallInfo)
+			local success = pcall(setclipboard, code)
+			if success then
+				wax.shared.Sonner.success("Copied calling code")
+			end
+		end,
+	},
+	{
+		Text = "Intercept Code",
+		Icon = "shield-alert",
+		Callback = function()
+			if not CurrentDetailLogEntry then
+				wax.shared.Sonner.info("No call details available")
+				return
+			end
+			local code = CodeGen.GenerateInterceptCode(CurrentDetailLogEntry)
+			local success = pcall(setclipboard, code)
+			if success then
+				wax.shared.Sonner.success("Copied intercept code")
+			end
+		end,
+	},
+})
 
 -- ===== ORIGIN dropdown =====
-CreateBottomDropdownButton("Origin", "file-text", function()
-	return {
-		{
-			Text = "Remote Path",
-			Icon = "package-search",
-			Callback = function()
-				if not CurrentDetailLogEntry then
-					wax.shared.Sonner.info("No call details available")
-					return
-				end
-				local path = CodeGen.GetFullPath(CurrentDetailLogEntry.Instance, { VariableName = "Remote" })
-				local success = pcall(setclipboard, path)
-				if success then
-					wax.shared.Sonner.success("Copied remote path")
-				end
-			end,
-		},
-		{
-			Text = "Script Path",
-			Icon = "file-search",
-			Condition = function()
-				return CurrentDetailCallInfo and CurrentDetailCallInfo.Origin and typeof(CurrentDetailCallInfo.Origin) == "Instance"
-			end,
-			Callback = function()
-				if not (CurrentDetailCallInfo and CurrentDetailCallInfo.Origin and typeof(CurrentDetailCallInfo.Origin) == "Instance") then
-					return
-				end
-				local success = pcall(setclipboard, CurrentDetailCallInfo.Origin:GetFullName())
-				if success then
-					wax.shared.Sonner.success("Copied script path")
-				end
-			end,
-		},
-		{
-			Text = "Decompile Script",
-			Icon = "file-code",
-			Condition = function()
-				return CurrentDetailCallInfo
-					and CurrentDetailCallInfo.Origin
-					and typeof(CurrentDetailCallInfo.Origin) == "Instance"
-					and typeof(decompile) == "function"
-			end,
-			Callback = function()
-				if not (CurrentDetailCallInfo and CurrentDetailCallInfo.Origin and typeof(CurrentDetailCallInfo.Origin) == "Instance") then
-					return
-				end
-				local ok, result = pcall(decompile, CurrentDetailCallInfo.Origin)
-				if ok then
-					pcall(setclipboard, result)
-					wax.shared.Sonner.success("Decompiled and copied")
-				else
-					wax.shared.Sonner.error("Failed to decompile")
-				end
-			end,
-		},
-	}
-end)
+CreateInfoDropdownButton("file-text", "Origin", {
+	{
+		Text = "Remote Path",
+		Icon = "package-search",
+		Callback = function()
+			if not CurrentDetailLogEntry then
+				wax.shared.Sonner.info("No call details available")
+				return
+			end
+			local path = CodeGen.GetFullPath(CurrentDetailLogEntry.Instance, { VariableName = "Remote" })
+			local success = pcall(setclipboard, path)
+			if success then
+				wax.shared.Sonner.success("Copied remote path")
+			end
+		end,
+	},
+	{
+		Text = "Script Path",
+		Icon = "file-search",
+		Condition = function()
+			return CurrentDetailCallInfo and CurrentDetailCallInfo.Origin and typeof(CurrentDetailCallInfo.Origin) == "Instance"
+		end,
+		Callback = function()
+			if not (CurrentDetailCallInfo and CurrentDetailCallInfo.Origin and typeof(CurrentDetailCallInfo.Origin) == "Instance") then
+				return
+			end
+			local success = pcall(setclipboard, CurrentDetailCallInfo.Origin:GetFullName())
+			if success then
+				wax.shared.Sonner.success("Copied script path")
+			end
+		end,
+	},
+	{
+		Text = "Decompile Script",
+		Icon = "file-code",
+		Condition = function()
+			return CurrentDetailCallInfo
+				and CurrentDetailCallInfo.Origin
+				and typeof(CurrentDetailCallInfo.Origin) == "Instance"
+				and typeof(decompile) == "function"
+		end,
+		Callback = function()
+			if not (CurrentDetailCallInfo and CurrentDetailCallInfo.Origin and typeof(CurrentDetailCallInfo.Origin) == "Instance") then
+				return
+			end
+			local ok, result = pcall(decompile, CurrentDetailCallInfo.Origin)
+			if ok then
+				pcall(setclipboard, result)
+				wax.shared.Sonner.success("Decompiled and copied")
+			else
+				wax.shared.Sonner.error("Failed to decompile")
+			end
+		end,
+	},
+})
 
 -- ===== EVENT dropdown =====
-CreateBottomDropdownButton("Event", "git-branch", function()
-	return {
-		{
-			Text = "Copy Event Path",
-			Icon = "copy",
-			Callback = function()
-				if not CurrentDetailLogEntry then
-					wax.shared.Sonner.info("No call details available")
-					return
-				end
-				local path = CodeGen.GetFullPath(CurrentDetailLogEntry.Instance, { VariableName = "Remote" })
-				local success = pcall(setclipboard, path)
-				if success then
-					wax.shared.Sonner.success("Copied event path")
-				end
-			end,
-		},
-		{
-			Text = "Replay",
-			Icon = "play",
-			Condition = function()
-				return CurrentDetailLogEntry and CurrentDetailLogEntry.Type == "Outgoing" and CurrentDetailCallInfo
-			end,
-			Callback = function()
-				if not (CurrentDetailLogEntry and CurrentDetailCallInfo) then
-					return
-				end
-				wax.shared.Sonner.promise(function()
-					wax.shared.ReplayCallInfo(CurrentDetailCallInfo, CurrentDetailLogEntry.Type)
-				end, {
-					loadingText = "Replaying...",
-					successText = "Replayed!",
-					errorText = "Failed to replay",
-				})
-			end,
-		},
-		{
-			Text = "Ignore",
-			Icon = "eye-off",
-			Condition = function()
-				return CurrentDetailLogEntry ~= nil
-			end,
-			Callback = function()
-				if not CurrentDetailLogEntry then return end
-				CurrentDetailLogEntry:Ignore()
-				wax.shared.Sonner.success(`{CurrentDetailLogEntry.Ignored and "Ignoring" or "Unignored"} {CurrentDetailLogEntry.Instance.Name}`)
-			end,
-		},
-		{
-			Text = "Block",
-			Icon = "lock",
-			Condition = function()
-				return CurrentDetailLogEntry ~= nil
-			end,
-			Callback = function()
-				if not CurrentDetailLogEntry then return end
-				CurrentDetailLogEntry:Block()
-				wax.shared.Sonner.success(`{CurrentDetailLogEntry.Blocked and "Blocking" or "Unblocked"} {CurrentDetailLogEntry.Instance.Name}`)
-			end,
-		},
-	}
-end)
+CreateInfoDropdownButton("git-branch", "Event", {
+	{
+		Text = "Copy Event Path",
+		Icon = "copy",
+		Callback = function()
+			if not CurrentDetailLogEntry then
+				wax.shared.Sonner.info("No call details available")
+				return
+			end
+			local path = CodeGen.GetFullPath(CurrentDetailLogEntry.Instance, { VariableName = "Remote" })
+			local success = pcall(setclipboard, path)
+			if success then
+				wax.shared.Sonner.success("Copied event path")
+			end
+		end,
+	},
+	{
+		Text = "Replay",
+		Icon = "play",
+		Condition = function()
+			return CurrentDetailLogEntry and CurrentDetailLogEntry.Type == "Outgoing" and CurrentDetailCallInfo
+		end,
+		Callback = function()
+			if not (CurrentDetailLogEntry and CurrentDetailCallInfo) then
+				return
+			end
+			wax.shared.Sonner.promise(function()
+				wax.shared.ReplayCallInfo(CurrentDetailCallInfo, CurrentDetailLogEntry.Type)
+			end, {
+				loadingText = "Replaying...",
+				successText = "Replayed!",
+				errorText = "Failed to replay",
+			})
+		end,
+	},
+	{
+		Text = "Ignore",
+		Icon = "eye-off",
+		Condition = function()
+			return CurrentDetailLogEntry ~= nil
+		end,
+		Callback = function()
+			if not CurrentDetailLogEntry then return end
+			CurrentDetailLogEntry:Ignore()
+			wax.shared.Sonner.success(`{CurrentDetailLogEntry.Ignored and "Ignoring" or "Unignored"} {CurrentDetailLogEntry.Instance.Name}`)
+		end,
+	},
+	{
+		Text = "Block",
+		Icon = "lock",
+		Condition = function()
+			return CurrentDetailLogEntry ~= nil
+		end,
+		Callback = function()
+			if not CurrentDetailLogEntry then return end
+			CurrentDetailLogEntry:Block()
+			wax.shared.Sonner.success(`{CurrentDetailLogEntry.Blocked and "Blocking" or "Unblocked"} {CurrentDetailLogEntry.Instance.Name}`)
+		end,
+	},
+})
 
 -- ============================================================
 -- RIGHT-CLICK CONTEXT MENU
@@ -5046,6 +4836,110 @@ SwitchTab("Outgoing")
 return {}
 
 end)() end,
+    [11] = function()local wax,script,require=ImportGlobals(11)local ImportGlobals return (function(...)--[[
+	Nova Spy Initialization
+	Sets up all hooks for monitoring remote events.
+]]
+
+local LuaEncode = require(script.Parent.Parent.Utils.Serializer.LuaEncode)
+local CodeGen = require(script.Parent.Parent.Utils.CodeGen.Generator)
+
+local Hooks = script.Parent.Hooks
+
+-- Main Thread Hooks
+for _, Hook in Hooks.Default:GetChildren() do
+	task.spawn(require, Hook)
+end
+
+getgenv().NovaInitialized = true
+
+-- Actor support
+local ActorsUtils = script.Parent.Actors
+
+wax.shared.ActorsEnabled = (
+	wax.shared.ExecutorSupport["run_on_actor"].IsWorking
+	and wax.shared.ExecutorSupport["getactors"].IsWorking
+	and wax.shared.ExecutorSupport["create_comm_channel"].IsWorking
+)
+
+if wax.shared.ActorsEnabled then
+	local ActorEnvironmentCode = ActorsUtils.Environment.Value
+
+	local IgnorePlayerModule = wax.shared.SaveManager:GetState("IgnorePlayerModule", true)
+	local IgnoredRemotesDropdown = wax.shared.SaveManager:GetState("IgnoredRemotesDropdown", {
+		["BindableEvent"] = true,
+		["BindableFunction"] = true,
+	})
+
+	local AlternativeEnabled = wax.shared.SaveManager:GetState("UseAlternativeHooks", false)
+
+	local CommunicationChannelID, Channel = create_comm_channel()
+	wax.shared.ActorCommunicator = Channel
+
+	local ActorData = LuaEncode({
+		Token = wax.shared.NovaVerificationToken,
+		IgnorePlayerModule = IgnorePlayerModule,
+		IgnoredRemotesDropdown = IgnoredRemotesDropdown,
+		UseAlternativeHooks = AlternativeEnabled,
+		ExecutorSupport = wax.shared.ExecutorSupport,
+	})
+
+	ActorEnvironmentCode = ActorEnvironmentCode:gsub("NOVA_ACTOR_DATA", ActorData)
+
+	-- Actor Logs Sync Layer
+	local function ReconstructTable(Info, CyclicRefs)
+		local Reconstructed = {}
+
+		for Key, Value in Info do
+			if type(Value) == "table" then
+				if Value["__Function"] and Value["Validation"] == wax.shared.NovaVerificationToken then
+					local FunctionData = table.clone(Value)
+					FunctionData["__Function"] = nil
+					FunctionData["Validation"] = nil
+
+					Reconstructed[Key] = FunctionData
+				else
+					Reconstructed[Key] = ReconstructTable(Value, CyclicRefs)
+				end
+			else
+				Reconstructed[Key] = Value
+			end
+		end
+
+		return Reconstructed
+	end
+
+	-- Listen for actor events
+	Channel:Listen("ActorLog", function(RemoteInstance, EventType, CallInfo)
+		if not RemoteInstance or not EventType then
+			return
+		end
+
+		local Log = wax.shared.Logs[EventType][RemoteInstance]
+		if not Log then
+			Log = wax.shared.Log and wax.shared.Log.new(RemoteInstance, EventType, CallInfo.Method, nil, nil)
+			if Log then
+				wax.shared.Logs[EventType][RemoteInstance] = Log
+			end
+		end
+
+		if Log then
+			local ReconstructedInfo = ReconstructTable(CallInfo, {})
+			Log:Call(ReconstructedInfo)
+		end
+	end)
+
+	-- Run on all actors
+	for _, Actor in getactors() do
+		pcall(function()
+			run_on_actor(Actor, ActorEnvironmentCode, CommunicationChannelID)
+		end)
+	end
+end
+
+return {}
+
+end)() end,
     [18] = function()local wax,script,require=ImportGlobals(18)local ImportGlobals return (function(...)--[[
 	Code Generation Module for Nova
 	Generates Lua code snippets for remote calls.
@@ -5260,6 +5154,683 @@ end))]])
 end
 
 return CodeGen
+
+end)() end,
+    [19] = function()local wax,script,require=ImportGlobals(19)local ImportGlobals return (function(...)--[[
+	Session Exporter for Nova
+	Exports logged session data to an HTML file.
+]]
+
+local SessionExporter = {}
+
+function SessionExporter:ProcessCalls(AllCalls, SessionData, UpdateProgress)
+	local Events = {}
+	local StringMap = {}
+	local StringIndex = 0
+
+	local function InternString(str)
+		if not StringMap[str] then
+			StringMap[str] = StringIndex
+			StringIndex += 1
+		end
+		return StringMap[str]
+	end
+
+	local Total = #AllCalls
+	for i, CallData in ipairs(AllCalls) do
+		if UpdateProgress then
+			UpdateProgress(i / Total)
+		end
+
+		local event = {
+			Type = InternString(CallData.Type or "Unknown"),
+			Remote = InternString(CallData.RemoteName or "Unknown"),
+			ClassName = InternString(CallData.ClassName or "Unknown"),
+			Time = CallData.Time or 0,
+			ArgCount = CallData.ArgCount or 0,
+		}
+
+		table.insert(Events, event)
+	end
+
+	return Events, StringMap
+end
+
+function SessionExporter:ExportSessionToHTML(Events, StringMap, SessionData)
+	local ReverseStringMap = {}
+	for str, idx in pairs(StringMap) do
+		ReverseStringMap[idx] = str
+	end
+
+	local eventsJson = wax.shared.HttpService:JSONEncode(Events)
+	local stringMapJson = wax.shared.HttpService:JSONEncode(ReverseStringMap)
+
+	local SessionId = SessionData.SessionId or wax.shared.HttpService:GenerateGUID(false)
+	local StartTime = SessionData.StartTime or 0
+	local EndTime = SessionData.EndTime or tick()
+	local PlaceId = SessionData.PlaceId or game.PlaceId
+	local Duration = string.format("%.1f", EndTime - StartTime)
+
+	local HTML = [[<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nova - Session Viewer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+            background: #0d1117;
+            color: #c9d1d9;
+        }
+        .header {
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+            padding: 12px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .brand {
+            font-weight: 700;
+            font-size: 16px;
+            color: #58a6ff;
+        }
+        .session-info {
+            font-size: 12px;
+            color: #8b949e;
+        }
+        .content {
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .stats {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 16px;
+            flex: 1;
+        }
+        .stat-label {
+            font-size: 11px;
+            color: #8b949e;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #f0f6fc;
+        }
+        .event-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .event-table th {
+            background: #21262d;
+            padding: 8px 12px;
+            text-align: left;
+            font-size: 12px;
+            color: #8b949e;
+            font-weight: 600;
+        }
+        .event-table td {
+            padding: 6px 12px;
+            border-top: 1px solid #21262d;
+            font-size: 13px;
+        }
+        .type-incoming { color: #3fb950; }
+        .type-outgoing { color: #f78166; }
+        .footer {
+            padding: 12px 20px;
+            text-align: center;
+            color: #484f58;
+            font-size: 11px;
+            border-top: 1px solid #30363d;
+            margin-top: 40px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="brand">Nova - Session Viewer</div>
+        <div class="session-info">Session / ]] .. SessionId .. [[</div>
+    </div>
+    <div class="content">
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-label">Total Events</div>
+                <div class="stat-value">]] .. tostring(#Events) .. [[</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Duration</div>
+                <div class="stat-value">]] .. Duration .. [[s</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Place ID</div>
+                <div class="stat-value">]] .. tostring(PlaceId) .. [[</div>
+            </div>
+        </div>
+        <table class="event-table">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Type</th>
+                    <th>Remote</th>
+                    <th>Class</th>
+                    <th>Time</th>
+                    <th>Args</th>
+                </tr>
+            </thead>
+            <tbody id="eventBody"></tbody>
+        </table>
+    </div>
+    <div class="footer">Generated by Nova Remote Spy</div>
+    <script>
+        const events = ]] .. eventsJson .. [[;
+        const stringMap = ]] .. stringMapJson .. [[;
+        const body = document.getElementById('eventBody');
+        events.forEach((e, i) => {
+            const type = stringMap[e.Type] || 'Unknown';
+            const typeClass = type === 'Incoming' ? 'type-incoming' : 'type-outgoing';
+            body.innerHTML += `<tr>
+                <td>${i + 1}</td>
+                <td class="${typeClass}">${type}</td>
+                <td>${stringMap[e.Remote] || 'Unknown'}</td>
+                <td>${stringMap[e.ClassName] || 'Unknown'}</td>
+                <td>${e.Time.toFixed(3)}s</td>
+                <td>${e.ArgCount}</td>
+            </tr>`;
+        });
+    </script>
+</body>
+</html>]]
+
+	return HTML
+end
+
+return SessionExporter
+
+end)() end,
+    [9] = function()local wax,script,require=ImportGlobals(9)local ImportGlobals return (function(...)--[[
+	Nova - Incoming Remote Hooks
+	Hooks OnClientEvent connections to monitor incoming remote calls.
+]]
+
+local Log = require(script.Parent.Parent.Parent.Parent.Utils.Log)
+
+local IgnorePlayerModule = wax.shared.SaveManager:GetState("IgnorePlayerModule", true)
+local IgnoredRemotesDropdown = wax.shared.SaveManager:GetState("IgnoredRemotesDropdown", {
+	["BindableEvent"] = true,
+	["BindableFunction"] = true,
+})
+
+local ClassToConnection = {
+	RemoteEvent = "OnClientEvent",
+	UnreliableRemoteEvent = "OnClientEvent",
+	RemoteFunction = "OnClientInvoke",
+	BindableEvent = "Event",
+	BindableFunction = "OnInvoke",
+}
+
+local function ShouldIgnore(instance)
+	if instance == wax.shared.Communicator then
+		return true
+	end
+
+	if IgnoredRemotesDropdown[instance.ClassName] then
+		return true
+	end
+
+	if IgnorePlayerModule then
+		local fullName = instance:GetFullName()
+		if string.find(fullName, "PlayerModule") or string.find(fullName, "PlayerScripts") then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function GetCallingScript()
+	if not getcallingscript then
+		return nil
+	end
+
+	local success, result = pcall(getcallingscript)
+	return success and result or nil
+end
+
+local function ProcessIncomingCall(instance, method, args)
+	if ShouldIgnore(instance) then
+		return
+	end
+
+	local LogEntry = wax.shared.Logs.Incoming[instance]
+	if not LogEntry then
+		LogEntry = Log.new(instance, "Incoming", method, nil, GetCallingScript())
+		wax.shared.Logs.Incoming[instance] = LogEntry
+	end
+
+	local CallInfo = {
+		Args = args,
+		Method = method,
+		IsExecutor = false,
+		Instance = instance,
+		Origin = GetCallingScript(),
+	}
+
+	LogEntry:Call(CallInfo)
+end
+
+-- Hook remote events for incoming signals
+local function HookRemote(remote)
+	if ShouldIgnore(remote) then
+		return
+	end
+
+	local className = remote.ClassName
+	local connectionName = ClassToConnection[className]
+
+	if not connectionName then
+		return
+	end
+
+	-- For RemoteEvent/UnreliableRemoteEvent - monitor OnClientEvent
+	if className == "RemoteEvent" or className == "UnreliableRemoteEvent" then
+		wax.shared.Connect(remote[connectionName]:Connect(function(...)
+			local args = { ... }
+			ProcessIncomingCall(remote, connectionName, args)
+		end))
+	end
+
+	-- For RemoteFunction - wrap OnClientInvoke
+	if className == "RemoteFunction" then
+		local originalInvoke = remote.OnClientInvoke
+		if originalInvoke then
+			remote.OnClientInvoke = function(...)
+				local args = { ... }
+				ProcessIncomingCall(remote, "OnClientInvoke", args)
+				return originalInvoke(...)
+			end
+		end
+	end
+end
+
+-- Hook existing remotes
+local function ScanAndHookRemotes()
+	local services = {
+		game:GetService("ReplicatedStorage"),
+		game:GetService("Workspace"),
+	}
+
+	-- Also check nil instances if available
+	if getnilinstances then
+		local success, nilInstances = pcall(getnilinstances)
+		if success and nilInstances then
+			for _, inst in pairs(nilInstances) do
+				if inst:IsA("RemoteEvent") or inst:IsA("RemoteFunction") or inst:IsA("UnreliableRemoteEvent") then
+					pcall(HookRemote, inst)
+				end
+			end
+		end
+	end
+
+	for _, service in pairs(services) do
+		for _, descendant in pairs(service:GetDescendants()) do
+			if descendant:IsA("RemoteEvent") or descendant:IsA("RemoteFunction") or descendant:IsA("UnreliableRemoteEvent") then
+				pcall(HookRemote, descendant)
+			end
+		end
+
+		-- Watch for new remotes
+		wax.shared.Connect(service.DescendantAdded:Connect(function(descendant)
+			if descendant:IsA("RemoteEvent") or descendant:IsA("RemoteFunction") or descendant:IsA("UnreliableRemoteEvent") then
+				task.defer(HookRemote, descendant)
+			end
+		end))
+	end
+end
+
+task.spawn(ScanAndHookRemotes)
+
+return {}
+
+end)() end,
+    [31] = function()local wax,script,require=ImportGlobals(31)local ImportGlobals return (function(...)--[[
+	Syntax Highlighter for Nova
+	Simple Luau syntax highlighter for code display.
+]]
+
+local Highlighter = {}
+
+local Keywords = {
+	["and"] = true, ["break"] = true, ["do"] = true, ["else"] = true,
+	["elseif"] = true, ["end"] = true, ["false"] = true, ["for"] = true,
+	["function"] = true, ["if"] = true, ["in"] = true, ["local"] = true,
+	["nil"] = true, ["not"] = true, ["or"] = true, ["repeat"] = true,
+	["return"] = true, ["then"] = true, ["true"] = true, ["until"] = true,
+	["while"] = true, ["continue"] = true, ["type"] = true, ["export"] = true,
+}
+
+local Globals = {
+	["game"] = true, ["workspace"] = true, ["script"] = true, ["math"] = true,
+	["string"] = true, ["table"] = true, ["task"] = true, ["coroutine"] = true,
+	["Instance"] = true, ["Vector3"] = true, ["Vector2"] = true, ["CFrame"] = true,
+	["Color3"] = true, ["BrickColor"] = true, ["UDim2"] = true, ["UDim"] = true,
+	["Enum"] = true, ["pairs"] = true, ["ipairs"] = true, ["next"] = true,
+	["pcall"] = true, ["xpcall"] = true, ["require"] = true, ["select"] = true,
+	["unpack"] = true, ["type"] = true, ["typeof"] = true, ["tostring"] = true,
+	["tonumber"] = true, ["print"] = true, ["warn"] = true, ["error"] = true,
+	["assert"] = true, ["rawget"] = true, ["rawset"] = true, ["setmetatable"] = true,
+	["getmetatable"] = true, ["newproxy"] = true, ["tick"] = true, ["wait"] = true,
+	["spawn"] = true, ["delay"] = true,
+}
+
+local Colors = {
+	Keyword = Color3.fromRGB(198, 120, 221),
+	String = Color3.fromRGB(152, 195, 121),
+	Number = Color3.fromRGB(209, 154, 102),
+	Comment = Color3.fromRGB(92, 99, 112),
+	Global = Color3.fromRGB(97, 175, 239),
+	Method = Color3.fromRGB(86, 182, 194),
+	Default = Color3.fromRGB(171, 178, 191),
+	Operator = Color3.fromRGB(86, 182, 194),
+}
+
+function Highlighter.Highlight(code: string): string
+	-- Simple rich text syntax highlighting
+	local result = code
+
+	-- Escape rich text characters first
+	result = result:gsub("&", "&amp;")
+	result = result:gsub("<", "&lt;")
+	result = result:gsub(">", "&gt;")
+
+	-- Comments (single line)
+	result = result:gsub("(%-%-[^\n]*)", function(match)
+		return `<font color="#{Colors.Comment:ToHex()}">{match}</font>`
+	end)
+
+	-- Strings (double quoted)
+	result = result:gsub('(".-")', function(match)
+		return `<font color="#{Colors.String:ToHex()}">{match}</font>`
+	end)
+
+	-- Strings (single quoted)
+	result = result:gsub("('.-')", function(match)
+		return `<font color="#{Colors.String:ToHex()}">{match}</font>`
+	end)
+
+	-- Numbers
+	result = result:gsub("(%d+%.?%d*)", function(match)
+		return `<font color="#{Colors.Number:ToHex()}">{match}</font>`
+	end)
+
+	-- Keywords
+	for keyword in pairs(Keywords) do
+		result = result:gsub("(%f[%w_])" .. keyword .. "(%f[^%w_])", function(pre, post)
+			return `{pre}<font color="#{Colors.Keyword:ToHex()}">{keyword}</font>{post}`
+		end)
+	end
+
+	return result
+end
+
+-- Get argument value color based on type (matching Cobalt's syntax scheme)
+function Highlighter.GetArgumentColor(value): Color3
+	local t = typeof(value)
+	if t == "string" then
+		return Colors.String
+	elseif t == "number" or t == "boolean" then
+		return Colors.Number
+	elseif t == "nil" then
+		return Colors.Number
+	elseif t == "EnumItem" or t == "Enum" then
+		return Colors.Method
+	elseif t == "Instance" then
+		return Colors.Global
+	elseif t == "Vector3" or t == "Vector2" or t == "CFrame" or t == "UDim2" or t == "UDim" or t == "Color3" or t == "BrickColor" then
+		return Colors.Number
+	elseif t == "function" then
+		return Colors.Keyword
+	else
+		return Colors.Default
+	end
+end
+
+Highlighter.Colors = Colors
+
+return Highlighter
+
+end)() end,
+    [23] = function()local wax,script,require=ImportGlobals(23)local ImportGlobals return (function(...)local Log = {}
+Log.__index = Log
+
+--// Auto Ignore Constants \\--
+local SpamCallCountThreshold = 15
+local SpamTimeWindowSeconds = 1
+
+function Log.new(Instance, Type, Method, Index, CallingScript)
+	local NewLog = setmetatable({
+		Instance = Instance,
+		Type = Type,
+		Method = Method,
+		Index = Index,
+		Calls = {},
+		GameCalls = {},
+		SpamHistory = {},
+		Ignored = false,
+		Blocked = false,
+		Button = nil,
+	}, Log)
+
+	return NewLog
+end
+
+function DeepClone(orig, copies)
+	copies = copies or {}
+
+	if typeof(orig) == "Instance" then
+		return cloneref(orig)
+	elseif typeof(orig) == "userdata" then
+		if getmetatable(orig) then
+			return newproxy(true)
+		else
+			return newproxy()
+		end
+	elseif typeof(orig) == "function" then
+		if clonefunction then
+			return clonefunction(orig)
+		end
+		return orig
+	elseif type(orig) ~= "table" then
+		return orig
+	elseif copies[orig] then
+		return copies[orig]
+	end
+
+	local copy = {}
+	copies[orig] = copy
+
+	for key, value in pairs(orig) do
+		copy[DeepClone(key, copies)] = DeepClone(value, copies)
+	end
+
+	return setmetatable(copy, DeepClone(getmetatable(orig), copies))
+end
+
+function Log:IsOverSpamThreshold()
+	local Now = tick()
+	table.insert(self.SpamHistory, Now)
+
+	-- Remove old entries
+	local Cutoff = Now - SpamTimeWindowSeconds
+	while #self.SpamHistory > 0 and self.SpamHistory[1] < Cutoff do
+		table.remove(self.SpamHistory, 1)
+	end
+
+	if #self.SpamHistory >= SpamCallCountThreshold then
+		if not self.Ignored then
+			self:Ignore()
+			wax.shared.Sonner.warning(`Auto-ignored {self.Instance.Name} (spam detected)`)
+		end
+		return true
+	end
+
+	return false
+end
+
+function Log:Call(RawInfo)
+	if self.Ignored or self.Blocked then
+		return
+	end
+
+	local Success, Data = pcall(function()
+		return self:IsOverSpamThreshold()
+	end)
+
+	if Success and Data then
+		return
+	end
+
+	local Info = DeepClone(RawInfo)
+	Info.CreationTime = tick()
+
+	local Index = #self.Calls + 1
+	self.Calls[Index] = Info
+	if not Info.IsExecutor then
+		table.insert(self.GameCalls, Index)
+	end
+
+	if wax.shared.Communicator then
+		wax.shared.Communicator.Fire(wax.shared.Communicator, self.Instance, self.Type, #self.Calls)
+	end
+end
+
+function Log:Ignore()
+	if wax.shared.ActorCommunicator then
+		pcall(function()
+			wax.shared.ActorCommunicator:Fire("MainIgnore", self.Instance, self.Type)
+		end)
+	end
+
+	self.Ignored = not self.Ignored
+
+	local IgnoredRemoteList = wax.shared.Settings["IgnoredRemotes"]
+	if IgnoredRemoteList then
+		if self.Ignored then
+			IgnoredRemoteList:AddToList(self)
+		else
+			IgnoredRemoteList:RemoveFromList(self)
+		end
+	end
+end
+
+local ClassesConnectionsToggle = {
+	RemoteEvent = "OnClientEvent",
+	UnreliableRemoteEvent = "OnClientEvent",
+	BindableEvent = "Event",
+}
+
+function Log:SetConnectionsEnabled(enabled: boolean)
+	if not self.Instance or not ClassesConnectionsToggle[self.Instance.ClassName] then
+		return
+	end
+
+	local ConnectionName = ClassesConnectionsToggle[self.Instance.ClassName]
+	if self.Type ~= "Incoming" or not ConnectionName then
+		return
+	end
+
+	for _, Connection in pairs(getconnections(self.Instance[ConnectionName])) do
+		if enabled then
+			Connection:Enable()
+		else
+			Connection:Disable()
+		end
+	end
+end
+
+function Log:Block()
+	if wax.shared.ActorCommunicator then
+		pcall(function()
+			wax.shared.ActorCommunicator:Fire("MainBlock", self.Instance, self.Type)
+		end)
+	end
+
+	self.Blocked = not self.Blocked
+	Log:SetConnectionsEnabled(not self.Blocked)
+end
+
+function Log:SetButton(Instance, Name, Calls)
+	self.Button = {
+		Instance = Instance,
+		Name = Name,
+		Calls = Calls,
+	}
+end
+
+function Log:GetLatestCall()
+	return self.Calls[#self.Calls]
+end
+
+function Log:GetCallCount()
+	return #self.Calls
+end
+
+function Log:GetGameCallCount()
+	return #self.GameCalls
+end
+
+return Log
+
+end)() end,
+    [25] = function()local wax,script,require=ImportGlobals(25)local ImportGlobals return (function(...)if not isfolder("Nova") then
+	makefolder("Nova")
+end
+
+if not isfile("Nova/Settings.json") then
+	writefile("Nova/Settings.json", "{}")
+end
+
+local SaveManager = {
+	State = {},
+}
+
+local Success, Error = pcall(function()
+	SaveManager.State = wax.shared.HttpService:JSONDecode(readfile("Nova/Settings.json"))
+end)
+
+if not Success then
+	warn("[Nova] Failed to load settings: " .. Error)
+end
+
+function SaveManager:SetState(Idx, Value)
+	SaveManager.State[Idx] = Value
+	pcall(writefile, "Nova/Settings.json", wax.shared.HttpService:JSONEncode(SaveManager.State))
+end
+
+function SaveManager:GetState(Idx, Default)
+	if SaveManager.State[Idx] ~= nil then
+		return SaveManager.State[Idx]
+	end
+
+	return Default
+end
+
+return SaveManager
 
 end)() end,
     [27] = function()local wax,script,require=ImportGlobals(27)local ImportGlobals return (function(...)-- LuaEncode - Optimal Table Serialization for Native Luau/Lua 5.1+
@@ -5560,431 +6131,6 @@ end
 return LuaEncode
 
 end)() end,
-    [19] = function()local wax,script,require=ImportGlobals(19)local ImportGlobals return (function(...)--[[
-	Session Exporter for Nova
-	Exports logged session data to an HTML file.
-]]
-
-local SessionExporter = {}
-
-function SessionExporter:ProcessCalls(AllCalls, SessionData, UpdateProgress)
-	local Events = {}
-	local StringMap = {}
-	local StringIndex = 0
-
-	local function InternString(str)
-		if not StringMap[str] then
-			StringMap[str] = StringIndex
-			StringIndex += 1
-		end
-		return StringMap[str]
-	end
-
-	local Total = #AllCalls
-	for i, CallData in ipairs(AllCalls) do
-		if UpdateProgress then
-			UpdateProgress(i / Total)
-		end
-
-		local event = {
-			Type = InternString(CallData.Type or "Unknown"),
-			Remote = InternString(CallData.RemoteName or "Unknown"),
-			ClassName = InternString(CallData.ClassName or "Unknown"),
-			Time = CallData.Time or 0,
-			ArgCount = CallData.ArgCount or 0,
-		}
-
-		table.insert(Events, event)
-	end
-
-	return Events, StringMap
-end
-
-function SessionExporter:ExportSessionToHTML(Events, StringMap, SessionData)
-	local ReverseStringMap = {}
-	for str, idx in pairs(StringMap) do
-		ReverseStringMap[idx] = str
-	end
-
-	local eventsJson = wax.shared.HttpService:JSONEncode(Events)
-	local stringMapJson = wax.shared.HttpService:JSONEncode(ReverseStringMap)
-
-	local SessionId = SessionData.SessionId or wax.shared.HttpService:GenerateGUID(false)
-	local StartTime = SessionData.StartTime or 0
-	local EndTime = SessionData.EndTime or tick()
-	local PlaceId = SessionData.PlaceId or game.PlaceId
-	local Duration = string.format("%.1f", EndTime - StartTime)
-
-	local HTML = [[<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nova - Session Viewer</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
-            background: #0d1117;
-            color: #c9d1d9;
-        }
-        .header {
-            background: #161b22;
-            border-bottom: 1px solid #30363d;
-            padding: 12px 20px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .brand {
-            font-weight: 700;
-            font-size: 16px;
-            color: #58a6ff;
-        }
-        .session-info {
-            font-size: 12px;
-            color: #8b949e;
-        }
-        .content {
-            padding: 20px;
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-        .stats {
-            display: flex;
-            gap: 20px;
-            margin-bottom: 20px;
-        }
-        .stat-card {
-            background: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 6px;
-            padding: 16px;
-            flex: 1;
-        }
-        .stat-label {
-            font-size: 11px;
-            color: #8b949e;
-            text-transform: uppercase;
-            margin-bottom: 4px;
-        }
-        .stat-value {
-            font-size: 24px;
-            font-weight: 700;
-            color: #f0f6fc;
-        }
-        .event-table {
-            width: 100%;
-            border-collapse: collapse;
-            background: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 6px;
-            overflow: hidden;
-        }
-        .event-table th {
-            background: #21262d;
-            padding: 8px 12px;
-            text-align: left;
-            font-size: 12px;
-            color: #8b949e;
-            font-weight: 600;
-        }
-        .event-table td {
-            padding: 6px 12px;
-            border-top: 1px solid #21262d;
-            font-size: 13px;
-        }
-        .type-incoming { color: #3fb950; }
-        .type-outgoing { color: #f78166; }
-        .footer {
-            padding: 12px 20px;
-            text-align: center;
-            color: #484f58;
-            font-size: 11px;
-            border-top: 1px solid #30363d;
-            margin-top: 40px;
-        }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <div class="brand">Nova - Session Viewer</div>
-        <div class="session-info">Session / ]] .. SessionId .. [[</div>
-    </div>
-    <div class="content">
-        <div class="stats">
-            <div class="stat-card">
-                <div class="stat-label">Total Events</div>
-                <div class="stat-value">]] .. tostring(#Events) .. [[</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Duration</div>
-                <div class="stat-value">]] .. Duration .. [[s</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Place ID</div>
-                <div class="stat-value">]] .. tostring(PlaceId) .. [[</div>
-            </div>
-        </div>
-        <table class="event-table">
-            <thead>
-                <tr>
-                    <th>#</th>
-                    <th>Type</th>
-                    <th>Remote</th>
-                    <th>Class</th>
-                    <th>Time</th>
-                    <th>Args</th>
-                </tr>
-            </thead>
-            <tbody id="eventBody"></tbody>
-        </table>
-    </div>
-    <div class="footer">Generated by Nova Remote Spy</div>
-    <script>
-        const events = ]] .. eventsJson .. [[;
-        const stringMap = ]] .. stringMapJson .. [[;
-        const body = document.getElementById('eventBody');
-        events.forEach((e, i) => {
-            const type = stringMap[e.Type] || 'Unknown';
-            const typeClass = type === 'Incoming' ? 'type-incoming' : 'type-outgoing';
-            body.innerHTML += `<tr>
-                <td>${i + 1}</td>
-                <td class="${typeClass}">${type}</td>
-                <td>${stringMap[e.Remote] || 'Unknown'}</td>
-                <td>${stringMap[e.ClassName] || 'Unknown'}</td>
-                <td>${e.Time.toFixed(3)}s</td>
-                <td>${e.ArgCount}</td>
-            </tr>`;
-        });
-    </script>
-</body>
-</html>]]
-
-	return HTML
-end
-
-return SessionExporter
-
-end)() end,
-    [23] = function()local wax,script,require=ImportGlobals(23)local ImportGlobals return (function(...)local Log = {}
-Log.__index = Log
-
---// Auto Ignore Constants \\--
-local SpamCallCountThreshold = 15
-local SpamTimeWindowSeconds = 1
-
-function Log.new(Instance, Type, Method, Index, CallingScript)
-	local NewLog = setmetatable({
-		Instance = Instance,
-		Type = Type,
-		Method = Method,
-		Index = Index,
-		Calls = {},
-		GameCalls = {},
-		SpamHistory = {},
-		Ignored = false,
-		Blocked = false,
-		Button = nil,
-	}, Log)
-
-	return NewLog
-end
-
-function DeepClone(orig, copies)
-	copies = copies or {}
-
-	if typeof(orig) == "Instance" then
-		return cloneref(orig)
-	elseif typeof(orig) == "userdata" then
-		if getmetatable(orig) then
-			return newproxy(true)
-		else
-			return newproxy()
-		end
-	elseif typeof(orig) == "function" then
-		if clonefunction then
-			return clonefunction(orig)
-		end
-		return orig
-	elseif type(orig) ~= "table" then
-		return orig
-	elseif copies[orig] then
-		return copies[orig]
-	end
-
-	local copy = {}
-	copies[orig] = copy
-
-	for key, value in pairs(orig) do
-		copy[DeepClone(key, copies)] = DeepClone(value, copies)
-	end
-
-	return setmetatable(copy, DeepClone(getmetatable(orig), copies))
-end
-
-function Log:IsOverSpamThreshold()
-	local Now = tick()
-	table.insert(self.SpamHistory, Now)
-
-	-- Remove old entries
-	local Cutoff = Now - SpamTimeWindowSeconds
-	while #self.SpamHistory > 0 and self.SpamHistory[1] < Cutoff do
-		table.remove(self.SpamHistory, 1)
-	end
-
-	if #self.SpamHistory >= SpamCallCountThreshold then
-		if not self.Ignored then
-			self:Ignore()
-			wax.shared.Sonner.warning(`Auto-ignored {self.Instance.Name} (spam detected)`)
-		end
-		return true
-	end
-
-	return false
-end
-
-function Log:Call(RawInfo)
-	if self.Ignored or self.Blocked then
-		return
-	end
-
-	local Success, Data = pcall(function()
-		return self:IsOverSpamThreshold()
-	end)
-
-	if Success and Data then
-		return
-	end
-
-	local Info = DeepClone(RawInfo)
-	Info.CreationTime = tick()
-
-	local Index = #self.Calls + 1
-	self.Calls[Index] = Info
-	if not Info.IsExecutor then
-		table.insert(self.GameCalls, Index)
-	end
-
-	if wax.shared.Communicator then
-		wax.shared.Communicator.Fire(wax.shared.Communicator, self.Instance, self.Type, #self.Calls)
-	end
-end
-
-function Log:Ignore()
-	if wax.shared.ActorCommunicator then
-		pcall(function()
-			wax.shared.ActorCommunicator:Fire("MainIgnore", self.Instance, self.Type)
-		end)
-	end
-
-	self.Ignored = not self.Ignored
-
-	local IgnoredRemoteList = wax.shared.Settings["IgnoredRemotes"]
-	if IgnoredRemoteList then
-		if self.Ignored then
-			IgnoredRemoteList:AddToList(self)
-		else
-			IgnoredRemoteList:RemoveFromList(self)
-		end
-	end
-end
-
-local ClassesConnectionsToggle = {
-	RemoteEvent = "OnClientEvent",
-	UnreliableRemoteEvent = "OnClientEvent",
-	BindableEvent = "Event",
-}
-
-function Log:SetConnectionsEnabled(enabled: boolean)
-	if not self.Instance or not ClassesConnectionsToggle[self.Instance.ClassName] then
-		return
-	end
-
-	local ConnectionName = ClassesConnectionsToggle[self.Instance.ClassName]
-	if self.Type ~= "Incoming" or not ConnectionName then
-		return
-	end
-
-	for _, Connection in pairs(getconnections(self.Instance[ConnectionName])) do
-		if enabled then
-			Connection:Enable()
-		else
-			Connection:Disable()
-		end
-	end
-end
-
-function Log:Block()
-	if wax.shared.ActorCommunicator then
-		pcall(function()
-			wax.shared.ActorCommunicator:Fire("MainBlock", self.Instance, self.Type)
-		end)
-	end
-
-	self.Blocked = not self.Blocked
-	Log:SetConnectionsEnabled(not self.Blocked)
-end
-
-function Log:SetButton(Instance, Name, Calls)
-	self.Button = {
-		Instance = Instance,
-		Name = Name,
-		Calls = Calls,
-	}
-end
-
-function Log:GetLatestCall()
-	return self.Calls[#self.Calls]
-end
-
-function Log:GetCallCount()
-	return #self.Calls
-end
-
-function Log:GetGameCallCount()
-	return #self.GameCalls
-end
-
-return Log
-
-end)() end,
-    [25] = function()local wax,script,require=ImportGlobals(25)local ImportGlobals return (function(...)if not isfolder("Nova") then
-	makefolder("Nova")
-end
-
-if not isfile("Nova/Settings.json") then
-	writefile("Nova/Settings.json", "{}")
-end
-
-local SaveManager = {
-	State = {},
-}
-
-local Success, Error = pcall(function()
-	SaveManager.State = wax.shared.HttpService:JSONDecode(readfile("Nova/Settings.json"))
-end)
-
-if not Success then
-	warn("[Nova] Failed to load settings: " .. Error)
-end
-
-function SaveManager:SetState(Idx, Value)
-	SaveManager.State[Idx] = Value
-	pcall(writefile, "Nova/Settings.json", wax.shared.HttpService:JSONEncode(SaveManager.State))
-end
-
-function SaveManager:GetState(Idx, Default)
-	if SaveManager.State[Idx] ~= nil then
-		return SaveManager.State[Idx]
-	end
-
-	return Default
-end
-
-return SaveManager
-
-end)() end,
     [30] = function()local wax,script,require=ImportGlobals(30)local ImportGlobals return (function(...)--[[
 	Helper Module for Nova
 	Various UI utility functions.
@@ -6159,113 +6305,6 @@ pcall(DetectAnticheats)
 return AnticheatMain
 
 end)() end,
-    [31] = function()local wax,script,require=ImportGlobals(31)local ImportGlobals return (function(...)--[[
-	Syntax Highlighter for Nova
-	Simple Luau syntax highlighter for code display.
-]]
-
-local Highlighter = {}
-
-local Keywords = {
-	["and"] = true, ["break"] = true, ["do"] = true, ["else"] = true,
-	["elseif"] = true, ["end"] = true, ["false"] = true, ["for"] = true,
-	["function"] = true, ["if"] = true, ["in"] = true, ["local"] = true,
-	["nil"] = true, ["not"] = true, ["or"] = true, ["repeat"] = true,
-	["return"] = true, ["then"] = true, ["true"] = true, ["until"] = true,
-	["while"] = true, ["continue"] = true, ["type"] = true, ["export"] = true,
-}
-
-local Globals = {
-	["game"] = true, ["workspace"] = true, ["script"] = true, ["math"] = true,
-	["string"] = true, ["table"] = true, ["task"] = true, ["coroutine"] = true,
-	["Instance"] = true, ["Vector3"] = true, ["Vector2"] = true, ["CFrame"] = true,
-	["Color3"] = true, ["BrickColor"] = true, ["UDim2"] = true, ["UDim"] = true,
-	["Enum"] = true, ["pairs"] = true, ["ipairs"] = true, ["next"] = true,
-	["pcall"] = true, ["xpcall"] = true, ["require"] = true, ["select"] = true,
-	["unpack"] = true, ["type"] = true, ["typeof"] = true, ["tostring"] = true,
-	["tonumber"] = true, ["print"] = true, ["warn"] = true, ["error"] = true,
-	["assert"] = true, ["rawget"] = true, ["rawset"] = true, ["setmetatable"] = true,
-	["getmetatable"] = true, ["newproxy"] = true, ["tick"] = true, ["wait"] = true,
-	["spawn"] = true, ["delay"] = true,
-}
-
-local Colors = {
-	Keyword = Color3.fromRGB(198, 120, 221),
-	String = Color3.fromRGB(152, 195, 121),
-	Number = Color3.fromRGB(209, 154, 102),
-	Comment = Color3.fromRGB(92, 99, 112),
-	Global = Color3.fromRGB(97, 175, 239),
-	Method = Color3.fromRGB(86, 182, 194),
-	Default = Color3.fromRGB(171, 178, 191),
-	Operator = Color3.fromRGB(86, 182, 194),
-}
-
-function Highlighter.Highlight(code: string): string
-	-- Simple rich text syntax highlighting
-	local result = code
-
-	-- Escape rich text characters first
-	result = result:gsub("&", "&amp;")
-	result = result:gsub("<", "&lt;")
-	result = result:gsub(">", "&gt;")
-
-	-- Comments (single line)
-	result = result:gsub("(%-%-[^\n]*)", function(match)
-		return `<font color="#{Colors.Comment:ToHex()}">{match}</font>`
-	end)
-
-	-- Strings (double quoted)
-	result = result:gsub('(".-")', function(match)
-		return `<font color="#{Colors.String:ToHex()}">{match}</font>`
-	end)
-
-	-- Strings (single quoted)
-	result = result:gsub("('.-')", function(match)
-		return `<font color="#{Colors.String:ToHex()}">{match}</font>`
-	end)
-
-	-- Numbers
-	result = result:gsub("(%d+%.?%d*)", function(match)
-		return `<font color="#{Colors.Number:ToHex()}">{match}</font>`
-	end)
-
-	-- Keywords
-	for keyword in pairs(Keywords) do
-		result = result:gsub("(%f[%w_])" .. keyword .. "(%f[^%w_])", function(pre, post)
-			return `{pre}<font color="#{Colors.Keyword:ToHex()}">{keyword}</font>{post}`
-		end)
-	end
-
-	return result
-end
-
--- Get argument value color based on type (matching Cobalt's syntax scheme)
-function Highlighter.GetArgumentColor(value): Color3
-	local t = typeof(value)
-	if t == "string" then
-		return Colors.String
-	elseif t == "number" or t == "boolean" then
-		return Colors.Number
-	elseif t == "nil" then
-		return Colors.Number
-	elseif t == "EnumItem" or t == "Enum" then
-		return Colors.Method
-	elseif t == "Instance" then
-		return Colors.Global
-	elseif t == "Vector3" or t == "Vector2" or t == "CFrame" or t == "UDim2" or t == "UDim" or t == "Color3" or t == "BrickColor" then
-		return Colors.Number
-	elseif t == "function" then
-		return Colors.Keyword
-	else
-		return Colors.Default
-	end
-end
-
-Highlighter.Colors = Colors
-
-return Highlighter
-
-end)() end,
     [16] = function()local wax,script,require=ImportGlobals(16)local ImportGlobals return (function(...)--[[
 	Adonis Anticheat Bypass for Nova
 ]]
@@ -6336,206 +6375,19 @@ local ObjectTree = {
                 },
                 {
                     {
-                        37,
-                        2,
-                        {
-                            "Window"
-                        }
-                    },
-                    {
-                        12,
-                        1,
-                        {
-                            "Utils"
-                        },
-                        {
-                            {
-                                22,
-                                2,
-                                {
-                                    "Hooking"
-                                }
-                            },
-                            {
-                                20,
-                                2,
-                                {
-                                    "Connect"
-                                }
-                            },
-                            {
-                                24,
-                                2,
-                                {
-                                    "Pagination"
-                                }
-                            },
-                            {
-                                23,
-                                2,
-                                {
-                                    "Log"
-                                }
-                            },
-                            {
-                                28,
-                                1,
-                                {
-                                    "UI"
-                                },
-                                {
-                                    {
-                                        34,
-                                        2,
-                                        {
-                                            "Interface"
-                                        }
-                                    },
-                                    {
-                                        30,
-                                        2,
-                                        {
-                                            "Helper"
-                                        }
-                                    },
-                                    {
-                                        33,
-                                        2,
-                                        {
-                                            "ImageFetch"
-                                        }
-                                    },
-                                    {
-                                        36,
-                                        2,
-                                        {
-                                            "Sonner"
-                                        }
-                                    },
-                                    {
-                                        35,
-                                        2,
-                                        {
-                                            "Resize"
-                                        }
-                                    },
-                                    {
-                                        32,
-                                        2,
-                                        {
-                                            "Icons"
-                                        }
-                                    },
-                                    {
-                                        29,
-                                        2,
-                                        {
-                                            "Drag"
-                                        }
-                                    },
-                                    {
-                                        31,
-                                        2,
-                                        {
-                                            "Highlighter"
-                                        }
-                                    }
-                                }
-                            },
-                            {
-                                13,
-                                1,
-                                {
-                                    "Anticheats"
-                                },
-                                {
-                                    {
-                                        14,
-                                        2,
-                                        {
-                                            "Main"
-                                        }
-                                    },
-                                    {
-                                        15,
-                                        1,
-                                        {
-                                            "impl"
-                                        },
-                                        {
-                                            {
-                                                16,
-                                                2,
-                                                {
-                                                    "Adonis"
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            },
-                            {
-                                17,
-                                1,
-                                {
-                                    "CodeGen"
-                                },
-                                {
-                                    {
-                                        18,
-                                        2,
-                                        {
-                                            "Generator"
-                                        }
-                                    },
-                                    {
-                                        19,
-                                        2,
-                                        {
-                                            "SessionExporter"
-                                        }
-                                    }
-                                }
-                            },
-                            {
-                                26,
-                                1,
-                                {
-                                    "Serializer"
-                                },
-                                {
-                                    {
-                                        27,
-                                        2,
-                                        {
-                                            "LuaEncode"
-                                        }
-                                    }
-                                }
-                            },
-                            {
-                                25,
-                                2,
-                                {
-                                    "SaveManager"
-                                }
-                            },
-                            {
-                                21,
-                                2,
-                                {
-                                    "FileLog"
-                                }
-                            }
-                        }
-                    },
-                    {
                         4,
                         2,
                         {
                             "Spy"
                         },
                         {
+                            {
+                                11,
+                                2,
+                                {
+                                    "Init"
+                                }
+                            },
                             {
                                 7,
                                 1,
@@ -6584,13 +6436,6 @@ local ObjectTree = {
                                         }
                                     }
                                 }
-                            },
-                            {
-                                11,
-                                2,
-                                {
-                                    "Init"
-                                }
                             }
                         }
                     },
@@ -6599,6 +6444,200 @@ local ObjectTree = {
                         2,
                         {
                             "ExecutorSupport"
+                        }
+                    },
+                    {
+                        12,
+                        1,
+                        {
+                            "Utils"
+                        },
+                        {
+                            {
+                                23,
+                                2,
+                                {
+                                    "Log"
+                                }
+                            },
+                            {
+                                20,
+                                2,
+                                {
+                                    "Connect"
+                                }
+                            },
+                            {
+                                13,
+                                1,
+                                {
+                                    "Anticheats"
+                                },
+                                {
+                                    {
+                                        14,
+                                        2,
+                                        {
+                                            "Main"
+                                        }
+                                    },
+                                    {
+                                        15,
+                                        1,
+                                        {
+                                            "impl"
+                                        },
+                                        {
+                                            {
+                                                16,
+                                                2,
+                                                {
+                                                    "Adonis"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            {
+                                21,
+                                2,
+                                {
+                                    "FileLog"
+                                }
+                            },
+                            {
+                                26,
+                                1,
+                                {
+                                    "Serializer"
+                                },
+                                {
+                                    {
+                                        27,
+                                        2,
+                                        {
+                                            "LuaEncode"
+                                        }
+                                    }
+                                }
+                            },
+                            {
+                                28,
+                                1,
+                                {
+                                    "UI"
+                                },
+                                {
+                                    {
+                                        35,
+                                        2,
+                                        {
+                                            "Resize"
+                                        }
+                                    },
+                                    {
+                                        36,
+                                        2,
+                                        {
+                                            "Sonner"
+                                        }
+                                    },
+                                    {
+                                        30,
+                                        2,
+                                        {
+                                            "Helper"
+                                        }
+                                    },
+                                    {
+                                        29,
+                                        2,
+                                        {
+                                            "Drag"
+                                        }
+                                    },
+                                    {
+                                        34,
+                                        2,
+                                        {
+                                            "Interface"
+                                        }
+                                    },
+                                    {
+                                        33,
+                                        2,
+                                        {
+                                            "ImageFetch"
+                                        }
+                                    },
+                                    {
+                                        32,
+                                        2,
+                                        {
+                                            "Icons"
+                                        }
+                                    },
+                                    {
+                                        31,
+                                        2,
+                                        {
+                                            "Highlighter"
+                                        }
+                                    }
+                                }
+                            },
+                            {
+                                25,
+                                2,
+                                {
+                                    "SaveManager"
+                                }
+                            },
+                            {
+                                22,
+                                2,
+                                {
+                                    "Hooking"
+                                }
+                            },
+                            {
+                                24,
+                                2,
+                                {
+                                    "Pagination"
+                                }
+                            },
+                            {
+                                17,
+                                1,
+                                {
+                                    "CodeGen"
+                                },
+                                {
+                                    {
+                                        19,
+                                        2,
+                                        {
+                                            "SessionExporter"
+                                        }
+                                    },
+                                    {
+                                        18,
+                                        2,
+                                        {
+                                            "Generator"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    {
+                        37,
+                        2,
+                        {
+                            "Window"
                         }
                     }
                 }
@@ -6609,32 +6648,32 @@ local ObjectTree = {
 
 -- Line offsets for debugging (only included when minifyTables is false)
 local LineOffsets = {
-    [2] = 816,
-    [3] = 1199,
-    [4] = 656,
-    [10] = 20,
-    [34] = 208,
-    [21] = 323,
-    [20] = 458,
-    [36] = 479,
-    [32] = 760,
-    [35] = 993,
-    [33] = 1088,
-    [22] = 1136,
+    [2] = 20,
+    [3] = 197,
+    [4] = 378,
+    [10] = 482,
+    [9] = 5366,
+    [21] = 785,
+    [20] = 920,
+    [36] = 941,
+    [32] = 1118,
+    [35] = 1174,
+    [33] = 1269,
+    [22] = 1317,
     [29] = 1380,
     [24] = 1432,
-    [16] = 6270,
-    [11] = 1695,
-    [37] = 1799,
-    [31] = 6163,
-    [14] = 6116,
-    [18] = 5050,
-    [23] = 5771,
-    [25] = 5953,
-    [19] = 5564,
-    [9] = 1550,
-    [30] = 5989,
-    [27] = 5266
+    [16] = 6308,
+    [11] = 4839,
+    [37] = 1550,
+    [14] = 6261,
+    [30] = 6134,
+    [18] = 4943,
+    [23] = 5618,
+    [25] = 5800,
+    [19] = 5159,
+    [34] = 670,
+    [31] = 5511,
+    [27] = 5836
 }
 
 -- Misc AOT variable imports
