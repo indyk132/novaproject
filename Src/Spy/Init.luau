@@ -18,10 +18,15 @@ getgenv().NovaInitialized = true
 -- Actor support
 local ActorsUtils = script.Parent.Actors
 
+local function IsFeatureWorking(name)
+	local data = wax.shared.ExecutorSupport[name]
+	return data and data.IsWorking
+end
+
 wax.shared.ActorsEnabled = (
-	wax.shared.ExecutorSupport["run_on_actor"].IsWorking
-	and wax.shared.ExecutorSupport["getactors"].IsWorking
-	and wax.shared.ExecutorSupport["create_comm_channel"].IsWorking
+	IsFeatureWorking("run_on_actor")
+	and IsFeatureWorking("getactors")
+	and IsFeatureWorking("create_comm_channel")
 )
 
 if wax.shared.ActorsEnabled then

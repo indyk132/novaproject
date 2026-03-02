@@ -75,28 +75,30 @@ local function ProcessQueue()
 		local removeCallback = entry.removeCallback
 
 		if Sonner.Wrapper then
-			notif.Parent = Sonner.Wrapper
+			pcall(function()
+				notif.Parent = Sonner.Wrapper
 
-			-- Animate in
-			wax.shared.TweenService:Create(notif, Sonner.TweenInfo, {
-				Position = UDim2.new(0.5, 0, 1, -8),
-				GroupTransparency = 0,
-			}):Play()
+				-- Animate in
+				wax.shared.TweenService:Create(notif, Sonner.TweenInfo, {
+					Position = UDim2.new(0.5, 0, 1, -8),
+					GroupTransparency = 0,
+				}):Play()
 
-			-- Auto dismiss
-			task.delay(time, function()
-				local tween = wax.shared.TweenService:Create(notif, Sonner.TweenInfo, {
-					Position = UDim2.new(0.5, 0, 1, 50),
-					GroupTransparency = 1,
-				})
-				tween:Play()
-				tween.Completed:Connect(function()
-					notif:Destroy()
+				-- Auto dismiss
+				task.delay(time, function()
+					local tween = wax.shared.TweenService:Create(notif, Sonner.TweenInfo, {
+						Position = UDim2.new(0.5, 0, 1, 50),
+						GroupTransparency = 1,
+					})
+					tween:Play()
+					tween.Completed:Connect(function()
+						notif:Destroy()
+					end)
+
+					if removeCallback then
+						removeCallback()
+					end
 				end)
-
-				if removeCallback then
-					removeCallback()
-				end
 			end)
 		end
 	end
