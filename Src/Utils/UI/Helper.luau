@@ -83,33 +83,113 @@ function Helper.QuickSerializeArgument(value): string
 	local t = typeof(value)
 	if t == "string" then
 		local display = value
+		-- Detect GUID pattern
+		if string.match(display, "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$") then
+			return "GUID"
+		end
 		if #display > 50 then
 			display = string.sub(display, 1, 47) .. "..."
 		end
+		-- Escape control characters for display
+		display = string.gsub(display, "[%c]", ".")
 		return `"{display}"`
 	elseif t == "Instance" then
-		return value:GetFullName()
+		local ok, fullName = pcall(function() return value:GetFullName() end)
+		if ok then
+			return fullName
+		end
+		return `[Instance] {tostring(value)}`
 	elseif t == "boolean" then
 		return tostring(value)
 	elseif t == "number" then
+		if value ~= value then
+			return "nan"
+		elseif value == math.huge then
+			return "math.huge"
+		elseif value == -math.huge then
+			return "-math.huge"
+		elseif value == math.floor(value) and math.abs(value) > 1e9 then
+			-- Likely a timestamp
+			return `{value} (timestamp?)`
+		end
 		return tostring(value)
 	elseif t == "nil" then
 		return "nil"
 	elseif t == "EnumItem" then
 		return tostring(value)
-	elseif t == "Vector3" or t == "Vector2" or t == "CFrame" or t == "UDim2" or t == "UDim" or t == "Color3" or t == "BrickColor" then
-		return tostring(value)
+	elseif t == "Vector3" then
+		return `Vector3({string.format("%.2f, %.2f, %.2f", value.X, value.Y, value.Z)})`
+	elseif t == "Vector2" then
+		return `Vector2({string.format("%.2f, %.2f", value.X, value.Y)})`
+	elseif t == "CFrame" then
+		local pos = value.Position
+		return `CFrame({string.format("%.1f, %.1f, %.1f, ...", pos.X, pos.Y, pos.Z)})`
+	elseif t == "UDim2" then
+		return `UDim2({value.X.Scale}, {value.X.Offset}, {value.Y.Scale}, {value.Y.Offset})`
+	elseif t == "UDim" then
+		return `UDim({value.Scale}, {value.Offset})`
+	elseif t == "Color3" then
+		return `Color3({string.format("%.2f, %.2f, %.2f", value.R, value.G, value.B)})`
+	elseif t == "BrickColor" then
+		return `BrickColor("{tostring(value)}")`
 	elseif t == "table" then
 		local len = 0
-		for _ in pairs(value) do
+		local isArray = true
+		local preview = {}
+		for k, v in pairs(value) do
 			len += 1
-			if len > 3 then break end
+			if len <= 3 then
+				if type(k) ~= "number" or k ~= len then
+					isArray = false
+				end
+				local vStr = Helper.QuickSerializeArgument(v)
+				if #vStr > 20 then
+					vStr = string.sub(vStr, 1, 17) .. "..."
+				end
+				if isArray then
+					table.insert(preview, vStr)
+				else
+					table.insert(preview, `{tostring(k)} = {vStr}`)
+				end
+			end
+			if len > 10 then break end
 		end
-		return `\{...} ({len}+ entries)`
+		local suffix = len > 3 and `, ... +{len - 3}` or ""
+		if len == 0 then
+			return "{}"
+		end
+		return `\{{table.concat(preview, ", ")}{suffix}}`
 	elseif t == "function" then
+		local info = debug and debug.info and pcall(debug.info, value, "n")
+		if info then
+			local ok, name = pcall(debug.info, value, "n")
+			if ok and name and name ~= "" then
+				return `function {name}()`
+			end
+		end
 		return "function()"
 	elseif t == "buffer" then
-		return `buffer({buffer.len(value)} bytes)`
+		local size = buffer.len(value)
+		if size <= 8 then
+			local bytes = {}
+			for i = 0, size - 1 do
+				table.insert(bytes, string.format("%02X", buffer.readu8(value, i)))
+			end
+			return `buffer[{table.concat(bytes, " ")}]`
+		end
+		return `buffer({size} bytes)`
+	elseif t == "thread" then
+		return `thread({tostring(value)})`
+	elseif t == "Ray" then
+		return `Ray({string.format("%.1f, %.1f, %.1f", value.Origin.X, value.Origin.Y, value.Origin.Z)})`
+	elseif t == "NumberRange" then
+		return `NumberRange({value.Min}, {value.Max})`
+	elseif t == "NumberSequence" then
+		return `NumberSequence({#value.Keypoints} keypoints)`
+	elseif t == "ColorSequence" then
+		return `ColorSequence({#value.Keypoints} keypoints)`
+	elseif t == "Rect" then
+		return `Rect({value.Min.X}, {value.Min.Y}, {value.Max.X}, {value.Max.Y})`
 	else
 		return tostring(value)
 	end

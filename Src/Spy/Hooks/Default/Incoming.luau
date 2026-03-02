@@ -64,6 +64,7 @@ local function ProcessIncomingCall(instance, method, args)
 		IsExecutor = false,
 		Instance = instance,
 		Origin = GetCallingScript(),
+		Traceback = debug and debug.traceback and debug.traceback() or nil,
 	}
 
 	LogEntry:Call(CallInfo)
@@ -108,6 +109,10 @@ local function ScanAndHookRemotes()
 	local services = {
 		game:GetService("ReplicatedStorage"),
 		game:GetService("Workspace"),
+		game:GetService("ReplicatedFirst"),
+		game:GetService("Players"),
+		game:GetService("Lighting"),
+		game:GetService("StarterGui"),
 	}
 
 	-- Also check nil instances if available
@@ -123,18 +128,20 @@ local function ScanAndHookRemotes()
 	end
 
 	for _, service in pairs(services) do
-		for _, descendant in pairs(service:GetDescendants()) do
-			if descendant:IsA("RemoteEvent") or descendant:IsA("RemoteFunction") or descendant:IsA("UnreliableRemoteEvent") then
-				pcall(HookRemote, descendant)
+		pcall(function()
+			for _, descendant in pairs(service:GetDescendants()) do
+				if descendant:IsA("RemoteEvent") or descendant:IsA("RemoteFunction") or descendant:IsA("UnreliableRemoteEvent") then
+					pcall(HookRemote, descendant)
+				end
 			end
-		end
 
-		-- Watch for new remotes
-		wax.shared.Connect(service.DescendantAdded:Connect(function(descendant)
-			if descendant:IsA("RemoteEvent") or descendant:IsA("RemoteFunction") or descendant:IsA("UnreliableRemoteEvent") then
-				task.defer(HookRemote, descendant)
-			end
-		end))
+			-- Watch for new remotes
+			wax.shared.Connect(service.DescendantAdded:Connect(function(descendant)
+				if descendant:IsA("RemoteEvent") or descendant:IsA("RemoteFunction") or descendant:IsA("UnreliableRemoteEvent") then
+					task.defer(HookRemote, descendant)
+				end
+			end))
+		end)
 	end
 end
 

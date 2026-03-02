@@ -1504,6 +1504,7 @@ end
 
 CreateInfoTab("Arguments", "list")
 CreateInfoTab("Code", "code")
+CreateInfoTab("Decompile", "file-code")
 CreateInfoTab("Function Info", "info")
 
 -- Tab content area
@@ -1516,7 +1517,7 @@ local InfoContentArea = Interface.New("Frame", {
 })
 
 -- Create pages for each tab
-for _, tabName in ipairs({"Arguments", "Code", "Function Info"}) do
+for _, tabName in ipairs({"Arguments", "Code", "Decompile", "Function Info"}) do
 	local page = Interface.New("ScrollingFrame", {
 		BackgroundTransparency = 1,
 		Size = UDim2.new(1, -10, 1, 0),
@@ -2171,16 +2172,14 @@ function ShowCallDetails(logEntry, callInfo, callIndex)
 			})
 
 			-- Value
-			local valueStr = tostring(arg)
-			if typeof(arg) == "Instance" then
-				valueStr = arg:GetFullName()
-			end
+			local argColor = SyntaxHighlighter.GetArgumentColor(arg)
+			local valueStr = Helper.QuickSerializeArgument(arg)
 			Interface.New("TextLabel", {
 				BackgroundTransparency = 1,
 				Size = UDim2.new(1, -80, 1, 0),
 				Position = UDim2.new(0, 24, 0, 0),
-				Text = `"{Helper.Truncate(valueStr, 40)}"`,
-				TextColor3 = Theme.Success,
+				Text = valueStr,
+				TextColor3 = argColor,
 				TextSize = 11,
 				Font = Enum.Font.Code,
 				TextXAlignment = Enum.TextXAlignment.Left,
@@ -2413,6 +2412,201 @@ function ShowCallDetails(logEntry, callInfo, callIndex)
 		end
 	end)
 
+	-- ========== DECOMPILE TAB ==========
+	local decompilePage = InfoTabPages["Decompile"]
+
+	if callInfo.Origin and typeof(callInfo.Origin) == "Instance" and typeof(decompile) == "function" then
+		-- Auto-decompile button
+		local decompileBtn = Interface.New("TextButton", {
+			Text = "",
+			BackgroundColor3 = Theme.Accent,
+			BackgroundTransparency = 0.85,
+			Size = UDim2.new(1, 0, 0, 32),
+			AutoButtonColor = false,
+			ZIndex = 52,
+			Parent = decompilePage,
+			["UICorner"] = { CornerRadius = UDim.new(0, 6) },
+		})
+
+		local decompBtnIcon = Interface.New("ImageLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.fromOffset(14, 14),
+			Position = UDim2.new(0.5, -60, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			ImageColor3 = Theme.Accent,
+			ZIndex = 53,
+			Parent = decompileBtn,
+		})
+		Icons.ApplyIcon(decompBtnIcon, "file-code")
+
+		Interface.New("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(0, 110, 1, 0),
+			Position = UDim2.new(0.5, -40, 0, 0),
+			Text = "Decompile Script",
+			TextColor3 = Theme.Accent,
+			TextSize = 12,
+			Font = Enum.Font.GothamBold,
+			ZIndex = 53,
+			Parent = decompileBtn,
+		})
+
+		-- Decompiled code display frame
+		local decompCodeFrame = Interface.New("Frame", {
+			BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			Visible = false,
+			ZIndex = 52,
+			Parent = decompilePage,
+			["UICorner"] = { CornerRadius = UDim.new(0, 6) },
+			["UIStroke"] = {
+				Color = Color3.fromRGB(25, 25, 25),
+				Thickness = 1,
+			},
+			["UIPadding"] = {
+				PaddingLeft = UDim.new(0, 8),
+				PaddingRight = UDim.new(0, 8),
+				PaddingTop = UDim.new(0, 8),
+				PaddingBottom = UDim.new(0, 8),
+			},
+		})
+
+		local decompCodeLabel = Interface.New("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			Text = "",
+			TextColor3 = SyntaxHighlighter.Colors.Default,
+			TextSize = 11,
+			Font = Enum.Font.Code,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			TextWrapped = true,
+			RichText = true,
+			ZIndex = 53,
+			Parent = decompCodeFrame,
+		})
+
+		-- Copy decompiled code button
+		local copyDecompBtn = Interface.New("TextButton", {
+			Text = "",
+			BackgroundColor3 = Color3.fromRGB(25, 25, 25),
+			Size = UDim2.new(1, 0, 0, 28),
+			AutoButtonColor = false,
+			Visible = false,
+			ZIndex = 52,
+			Parent = decompilePage,
+			["UICorner"] = { CornerRadius = UDim.new(0, 5) },
+		})
+
+		local copyDecompIco = Interface.New("ImageLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.fromOffset(12, 12),
+			Position = UDim2.new(0.5, -65, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			ImageColor3 = Theme.TextMuted,
+			ZIndex = 53,
+			Parent = copyDecompBtn,
+		})
+		Icons.ApplyIcon(copyDecompIco, "copy")
+
+		Interface.New("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(0, 120, 1, 0),
+			Position = UDim2.new(0.5, -49, 0, 0),
+			Text = "Copy Decompiled",
+			TextColor3 = Theme.Text,
+			TextSize = 11,
+			Font = Enum.Font.GothamMedium,
+			ZIndex = 53,
+			Parent = copyDecompBtn,
+		})
+		Helper.HoverEffect(copyDecompBtn, Color3.fromRGB(35, 35, 35), Color3.fromRGB(25, 25, 25))
+
+		local decompResult = nil
+
+		decompileBtn.MouseButton1Click:Connect(function()
+			decompileBtn.Visible = false
+
+			local statusLabel = Interface.New("TextLabel", {
+				BackgroundTransparency = 1,
+				Size = UDim2.new(1, 0, 0, 20),
+				Text = "Decompiling...",
+				TextColor3 = Theme.TextMuted,
+				TextSize = 11,
+				Font = Enum.Font.GothamMedium,
+				ZIndex = 52,
+				Parent = decompilePage,
+			})
+
+			task.spawn(function()
+				local ok, result = pcall(decompile, callInfo.Origin)
+				if statusLabel.Parent then
+					statusLabel:Destroy()
+				end
+
+				if ok and result then
+					decompResult = result
+					-- Truncate for display if very long
+					local displayCode = result
+					if #displayCode > 8000 then
+						displayCode = string.sub(displayCode, 1, 8000) .. "\n\n-- ... truncated (copy for full code)"
+					end
+					local highlighted = SyntaxHighlighter.Highlight(displayCode)
+					decompCodeLabel.Text = highlighted
+					decompCodeFrame.Visible = true
+					copyDecompBtn.Visible = true
+				else
+					Interface.New("TextLabel", {
+						BackgroundTransparency = 1,
+						Size = UDim2.new(1, 0, 0, 20),
+						Text = `Failed to decompile: {tostring(result)}`,
+						TextColor3 = Theme.Error,
+						TextSize = 11,
+						Font = Enum.Font.GothamMedium,
+						ZIndex = 52,
+						Parent = decompilePage,
+					})
+				end
+			end)
+		end)
+
+		copyDecompBtn.MouseButton1Click:Connect(function()
+			if decompResult then
+				local success = pcall(setclipboard, decompResult)
+				if success then
+					wax.shared.Sonner.success("Copied decompiled code")
+				end
+			end
+		end)
+
+		-- Origin info
+		Interface.New("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, 0, 0, 16),
+			Text = `Script: {callInfo.Origin:GetFullName()}`,
+			TextColor3 = Theme.TextMuted,
+			TextSize = 10,
+			Font = Enum.Font.GothamMedium,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			ZIndex = 52,
+			Parent = decompilePage,
+		})
+	else
+		Interface.New("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, 0, 0, 24),
+			Text = typeof(decompile) == "function" and "No script origin available" or "Decompiler not available",
+			TextColor3 = Theme.TextMuted,
+			TextSize = 11,
+			Font = Enum.Font.GothamMedium,
+			ZIndex = 52,
+			Parent = decompilePage,
+		})
+	end
+
 	-- ========== FUNCTION INFO TAB ==========
 	local infoPage = InfoTabPages["Function Info"]
 
@@ -2512,53 +2706,7 @@ function ShowCallDetails(logEntry, callInfo, callIndex)
 		})
 	end
 
-	-- Decompile button if available
-	if callInfo.Origin and typeof(callInfo.Origin) == "Instance" and typeof(decompile) == "function" then
-		local decompBtn = Interface.New("TextButton", {
-			Text = "",
-			BackgroundColor3 = Theme.Surface,
-			Size = UDim2.new(1, 0, 0, 28),
-			AutoButtonColor = false,
-			ZIndex = 52,
-			Parent = infoPage,
-			["UICorner"] = { CornerRadius = UDim.new(0, 5) },
-		})
-
-		local decompIco = Interface.New("ImageLabel", {
-			BackgroundTransparency = 1,
-			Size = UDim2.fromOffset(12, 12),
-			Position = UDim2.new(0, 10, 0.5, 0),
-			AnchorPoint = Vector2.new(0, 0.5),
-			ImageColor3 = Theme.TextMuted,
-			ZIndex = 53,
-			Parent = decompBtn,
-		})
-		Icons.ApplyIcon(decompIco, "file-code")
-
-		Interface.New("TextLabel", {
-			BackgroundTransparency = 1,
-			Size = UDim2.new(1, -30, 1, 0),
-			Position = UDim2.new(0, 28, 0, 0),
-			Text = "Decompile Origin",
-			TextColor3 = Theme.Text,
-			TextSize = 11,
-			Font = Enum.Font.GothamMedium,
-			TextXAlignment = Enum.TextXAlignment.Left,
-			ZIndex = 53,
-			Parent = decompBtn,
-		})
-
-		Helper.HoverEffect(decompBtn, Theme.SurfaceHover, Theme.Surface)
-		decompBtn.MouseButton1Click:Connect(function()
-			local success, result = pcall(decompile, callInfo.Origin)
-			if success then
-				pcall(setclipboard, result)
-				wax.shared.Sonner.success("Decompiled and copied")
-			else
-				wax.shared.Sonner.error("Failed to decompile")
-			end
-		end)
-	end
+	-- Decompile button removed - now has dedicated Decompile tab
 
 	-- Start on Arguments tab
 	SwitchInfoTab("Arguments")

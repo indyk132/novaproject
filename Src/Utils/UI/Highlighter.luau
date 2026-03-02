@@ -1,6 +1,6 @@
 --[[
 	Syntax Highlighter for Nova
-	Simple Luau syntax highlighter for code display.
+	Luau syntax highlighter for code display with RichText.
 ]]
 
 local Highlighter = {}
@@ -26,6 +26,13 @@ local Globals = {
 	["assert"] = true, ["rawget"] = true, ["rawset"] = true, ["setmetatable"] = true,
 	["getmetatable"] = true, ["newproxy"] = true, ["tick"] = true, ["wait"] = true,
 	["spawn"] = true, ["delay"] = true,
+	-- Executor globals
+	["hookfunction"] = true, ["hookmetamethod"] = true, ["newcclosure"] = true,
+	["checkcaller"] = true, ["getnamecallmethod"] = true, ["getcallingscript"] = true,
+	["setclipboard"] = true, ["decompile"] = true, ["cloneref"] = true,
+	["getconnections"] = true, ["getnilinstances"] = true, ["buffer"] = true,
+	["Ray"] = true, ["NumberRange"] = true, ["Rect"] = true, ["NumberSequence"] = true,
+	["ColorSequence"] = true, ["self"] = true,
 }
 
 local Colors = {
@@ -37,6 +44,8 @@ local Colors = {
 	Method = Color3.fromRGB(86, 182, 194),
 	Default = Color3.fromRGB(171, 178, 191),
 	Operator = Color3.fromRGB(86, 182, 194),
+	Boolean = Color3.fromRGB(209, 154, 102),
+	Nil = Color3.fromRGB(209, 154, 102),
 }
 
 function Highlighter.Highlight(code: string): string
@@ -48,22 +57,40 @@ function Highlighter.Highlight(code: string): string
 	result = result:gsub("<", "&lt;")
 	result = result:gsub(">", "&gt;")
 
+	-- Block comments
+	result = result:gsub("(%-%-%[%[.-%]%])", function(match)
+		return `<font color="#{Colors.Comment:ToHex()}">{match}</font>`
+	end)
+
 	-- Comments (single line)
 	result = result:gsub("(%-%-[^\n]*)", function(match)
+		-- Don't re-highlight if already in a font tag
+		if match:find("<font") then return match end
 		return `<font color="#{Colors.Comment:ToHex()}">{match}</font>`
+	end)
+
+	-- Multi-line strings
+	result = result:gsub("(%[%[.-%]%])", function(match)
+		if match:find("<font") then return match end
+		return `<font color="#{Colors.String:ToHex()}">{match}</font>`
 	end)
 
 	-- Strings (double quoted)
 	result = result:gsub('(".-")', function(match)
+		if match:find("<font") then return match end
 		return `<font color="#{Colors.String:ToHex()}">{match}</font>`
 	end)
 
 	-- Strings (single quoted)
 	result = result:gsub("('.-')", function(match)
+		if match:find("<font") then return match end
 		return `<font color="#{Colors.String:ToHex()}">{match}</font>`
 	end)
 
-	-- Numbers
+	-- Numbers (including hex)
+	result = result:gsub("(0x%x+)", function(match)
+		return `<font color="#{Colors.Number:ToHex()}">{match}</font>`
+	end)
 	result = result:gsub("(%d+%.?%d*)", function(match)
 		return `<font color="#{Colors.Number:ToHex()}">{match}</font>`
 	end)
@@ -75,18 +102,25 @@ function Highlighter.Highlight(code: string): string
 		end)
 	end
 
+	-- Methods (after colon or dot)
+	result = result:gsub("([%.:])(%w+)(%s*%()", function(sep, name, paren)
+		return `{sep}<font color="#{Colors.Method:ToHex()}">{name}</font>{paren}`
+	end)
+
 	return result
 end
 
--- Get argument value color based on type (matching Cobalt's syntax scheme)
+-- Get argument value color based on type
 function Highlighter.GetArgumentColor(value): Color3
 	local t = typeof(value)
 	if t == "string" then
 		return Colors.String
-	elseif t == "number" or t == "boolean" then
+	elseif t == "number" then
 		return Colors.Number
+	elseif t == "boolean" then
+		return Colors.Boolean
 	elseif t == "nil" then
-		return Colors.Number
+		return Colors.Nil
 	elseif t == "EnumItem" or t == "Enum" then
 		return Colors.Method
 	elseif t == "Instance" then
@@ -95,6 +129,10 @@ function Highlighter.GetArgumentColor(value): Color3
 		return Colors.Number
 	elseif t == "function" then
 		return Colors.Keyword
+	elseif t == "table" then
+		return Colors.Default
+	elseif t == "buffer" then
+		return Colors.Method
 	else
 		return Colors.Default
 	end

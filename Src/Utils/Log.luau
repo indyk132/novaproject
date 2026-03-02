@@ -4,6 +4,7 @@ Log.__index = Log
 --// Auto Ignore Constants \\--
 local SpamCallCountThreshold = 15
 local SpamTimeWindowSeconds = 1
+local MaxCallsStored = 500 -- Prevent memory bloat
 
 function Log.new(Instance, Type, Method, Index, CallingScript)
 	local NewLog = setmetatable({
@@ -17,6 +18,9 @@ function Log.new(Instance, Type, Method, Index, CallingScript)
 		Ignored = false,
 		Blocked = false,
 		Button = nil,
+		TotalCallCount = 0, -- Track total even when calls are trimmed
+		FirstCallTime = nil,
+		LastCallTime = nil,
 	}, Log)
 
 	return NewLog
@@ -91,10 +95,31 @@ function Log:Call(RawInfo)
 	local Info = DeepClone(RawInfo)
 	Info.CreationTime = tick()
 
+	self.TotalCallCount = (self.TotalCallCount or 0) + 1
+	self.LastCallTime = Info.CreationTime
+	if not self.FirstCallTime then
+		self.FirstCallTime = Info.CreationTime
+	end
+
 	local Index = #self.Calls + 1
 	self.Calls[Index] = Info
 	if not Info.IsExecutor then
 		table.insert(self.GameCalls, Index)
+	end
+
+	-- Trim old calls to prevent memory bloat
+	if #self.Calls > MaxCallsStored then
+		local excess = #self.Calls - MaxCallsStored
+		for i = 1, excess do
+			self.Calls[i] = nil
+		end
+		-- Rebuild GameCalls index
+		self.GameCalls = {}
+		for i, call in pairs(self.Calls) do
+			if call and not call.IsExecutor then
+				table.insert(self.GameCalls, i)
+			end
+		end
 	end
 
 	if wax.shared.Communicator then
@@ -171,6 +196,10 @@ end
 
 function Log:GetCallCount()
 	return #self.Calls
+end
+
+function Log:GetTotalCallCount()
+	return self.TotalCallCount or #self.Calls
 end
 
 function Log:GetGameCallCount()
