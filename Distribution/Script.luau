@@ -205,119 +205,156 @@ end
 return {}
 
 end)() end,
-    [34] = function()local wax,script,require=ImportGlobals(34)local ImportGlobals return (function(...)--[[
-	Interface Module for Nova
-	Utility for creating UI elements with properties applied automatically.
+    [9] = function()local wax,script,require=ImportGlobals(9)local ImportGlobals return (function(...)--[[
+	Nova - Incoming Remote Hooks
+	Hooks OnClientEvent connections to monitor incoming remote calls.
 ]]
 
-local Interface = {}
+local Log = require(script.Parent.Parent.Parent.Parent.Utils.Log)
 
-local SpecialProperties = {
-	["UICorner"] = true,
-	["UIStroke"] = true,
-	["UIPadding"] = true,
-	["UIListLayout"] = true,
-	["UIGridLayout"] = true,
-	["UITableLayout"] = true,
-	["UIPageLayout"] = true,
-	["UIFlexItem"] = true,
-	["UISizeConstraint"] = true,
-	["UITextSizeConstraint"] = true,
-	["UIAspectRatioConstraint"] = true,
-	["UIGradient"] = true,
-	["UIScale"] = true,
+local IgnorePlayerModule = wax.shared.SaveManager:GetState("IgnorePlayerModule", true)
+local IgnoredRemotesDropdown = wax.shared.SaveManager:GetState("IgnoredRemotesDropdown", {
+	["BindableEvent"] = true,
+	["BindableFunction"] = true,
+})
+
+local ClassToConnection = {
+	RemoteEvent = "OnClientEvent",
+	UnreliableRemoteEvent = "OnClientEvent",
+	RemoteFunction = "OnClientInvoke",
+	BindableEvent = "Event",
+	BindableFunction = "OnInvoke",
 }
 
-function Interface.New(className: string, properties: { [string]: any }?): Instance
-	local instance = Instance.new(className)
+local function ShouldIgnore(instance)
+	if instance == wax.shared.Communicator then
+		return true
+	end
 
-	if properties then
-		for key, value in pairs(properties) do
-			if SpecialProperties[key] then
-				-- Create UI component as child
-				local uiComponent = Instance.new(key)
-				if type(value) == "table" then
-					for prop, val in pairs(value) do
-						uiComponent[prop] = val
-					end
+	if IgnoredRemotesDropdown[instance.ClassName] then
+		return true
+	end
+
+	if IgnorePlayerModule then
+		local fullName = instance:GetFullName()
+		if string.find(fullName, "PlayerModule") or string.find(fullName, "PlayerScripts") then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function GetCallingScript()
+	if not getcallingscript then
+		return nil
+	end
+
+	local success, result = pcall(getcallingscript)
+	return success and result or nil
+end
+
+local function ProcessIncomingCall(instance, method, args)
+	if ShouldIgnore(instance) then
+		return
+	end
+
+	local LogEntry = wax.shared.Logs.Incoming[instance]
+	if not LogEntry then
+		LogEntry = Log.new(instance, "Incoming", method, nil, GetCallingScript())
+		wax.shared.Logs.Incoming[instance] = LogEntry
+	end
+
+	local CallInfo = {
+		Args = args,
+		Method = method,
+		IsExecutor = false,
+		Instance = instance,
+		Origin = GetCallingScript(),
+		Traceback = debug and debug.traceback and debug.traceback() or nil,
+	}
+
+	LogEntry:Call(CallInfo)
+end
+
+-- Hook remote events for incoming signals
+local function HookRemote(remote)
+	if ShouldIgnore(remote) then
+		return
+	end
+
+	local className = remote.ClassName
+	local connectionName = ClassToConnection[className]
+
+	if not connectionName then
+		return
+	end
+
+	-- For RemoteEvent/UnreliableRemoteEvent - monitor OnClientEvent
+	if className == "RemoteEvent" or className == "UnreliableRemoteEvent" then
+		wax.shared.Connect(remote[connectionName]:Connect(function(...)
+			local args = { ... }
+			ProcessIncomingCall(remote, connectionName, args)
+		end))
+	end
+
+	-- For RemoteFunction - wrap OnClientInvoke
+	if className == "RemoteFunction" then
+		local originalInvoke = remote.OnClientInvoke
+		if originalInvoke then
+			remote.OnClientInvoke = function(...)
+				local args = { ... }
+				ProcessIncomingCall(remote, "OnClientInvoke", args)
+				return originalInvoke(...)
+			end
+		end
+	end
+end
+
+-- Hook existing remotes
+local function ScanAndHookRemotes()
+	local services = {
+		game:GetService("ReplicatedStorage"),
+		game:GetService("Workspace"),
+		game:GetService("ReplicatedFirst"),
+		game:GetService("Players"),
+		game:GetService("Lighting"),
+		game:GetService("StarterGui"),
+	}
+
+	-- Also check nil instances if available
+	if getnilinstances then
+		local success, nilInstances = pcall(getnilinstances)
+		if success and nilInstances then
+			for _, inst in pairs(nilInstances) do
+				if inst:IsA("RemoteEvent") or inst:IsA("RemoteFunction") or inst:IsA("UnreliableRemoteEvent") then
+					pcall(HookRemote, inst)
 				end
-				uiComponent.Parent = instance
-			else
-				instance[key] = value
 			end
 		end
 	end
 
-	return instance
-end
-
-function Interface.CreateScreenGui(name: string)
-	local screenGui = Instance.new("ScreenGui")
-	screenGui.Name = name
-	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-	screenGui.ResetOnSpawn = false
-	screenGui.DisplayOrder = 999999
-
-	-- Try gethui first, then CoreGui
-	local success, _ = pcall(function()
-		if gethui then
-			screenGui.Parent = gethui()
-		else
-			screenGui.Parent = wax.shared.CoreGui
-		end
-	end)
-
-	if not success then
+	for _, service in pairs(services) do
 		pcall(function()
-			screenGui.Parent = wax.shared.Players.LocalPlayer:WaitForChild("PlayerGui")
+			for _, descendant in pairs(service:GetDescendants()) do
+				if descendant:IsA("RemoteEvent") or descendant:IsA("RemoteFunction") or descendant:IsA("UnreliableRemoteEvent") then
+					pcall(HookRemote, descendant)
+				end
+			end
+
+			-- Watch for new remotes
+			wax.shared.Connect(service.DescendantAdded:Connect(function(descendant)
+				if descendant:IsA("RemoteEvent") or descendant:IsA("RemoteFunction") or descendant:IsA("UnreliableRemoteEvent") then
+					task.defer(HookRemote, descendant)
+				end
+			end))
 		end)
 	end
-
-	return screenGui
 end
 
-function Interface.CreateImageLabel(properties)
-	local imageLabel = Interface.New("ImageLabel", properties)
-	return imageLabel
-end
+task.spawn(ScanAndHookRemotes)
 
-function Interface.CreateTextLabel(properties)
-	local defaults = {
-		BackgroundTransparency = 1,
-		TextColor3 = Color3.fromRGB(200, 200, 200),
-		TextSize = 14,
-		Font = Enum.Font.GothamMedium,
-		TextXAlignment = Enum.TextXAlignment.Left,
-	}
-
-	for key, value in pairs(defaults) do
-		if properties[key] == nil then
-			properties[key] = value
-		end
-	end
-
-	return Interface.New("TextLabel", properties)
-end
-
-function Interface.CreateTextButton(properties)
-	local defaults = {
-		BackgroundTransparency = 1,
-		TextColor3 = Color3.fromRGB(200, 200, 200),
-		TextSize = 14,
-		Font = Enum.Font.GothamMedium,
-		AutoButtonColor = false,
-	}
-
-	for key, value in pairs(defaults) do
-		if properties[key] == nil then
-			properties[key] = value
-		end
-	end
-
-	return Interface.New("TextButton", properties)
-end
-
-return Interface
+return {}
 
 end)() end,
     [21] = function()local wax,script,require=ImportGlobals(21)local ImportGlobals return (function(...)-- Logger
@@ -1085,52 +1122,211 @@ end
 return Resize
 
 end)() end,
-    [33] = function()local wax,script,require=ImportGlobals(33)local ImportGlobals return (function(...)--[[
-	Image Fetcher for Nova
-	Handles fetching and caching images for UI elements.
+    [19] = function()local wax,script,require=ImportGlobals(19)local ImportGlobals return (function(...)--[[
+	Session Exporter for Nova
+	Exports logged session data to an HTML file.
 ]]
 
-local ImageFetch = {}
+local SessionExporter = {}
 
-local Cache = {}
+function SessionExporter:ProcessCalls(AllCalls, SessionData, UpdateProgress)
+	local Events = {}
+	local StringMap = {}
+	local StringIndex = 0
 
-local RemoteImages = {
-	RemoteEvent = "rbxassetid://4229806545",
-	RemoteFunction = "rbxassetid://4229806870",
-	UnreliableRemoteEvent = "rbxassetid://4229806545",
-	BindableEvent = "rbxassetid://4229806545",
-	BindableFunction = "rbxassetid://4229806870",
-}
-
-function ImageFetch.GetRemoteImage(className: string): string
-	return RemoteImages[className] or "rbxassetid://4229806545"
-end
-
-function ImageFetch.Preload(imageIds: { string })
-	if wax.shared.ContentProvider then
-		local instances = {}
-		for _, id in ipairs(imageIds) do
-			if not Cache[id] then
-				local img = Instance.new("ImageLabel")
-				img.Image = id
-				table.insert(instances, img)
-				Cache[id] = true
-			end
+	local function InternString(str)
+		if not StringMap[str] then
+			StringMap[str] = StringIndex
+			StringIndex += 1
 		end
-
-		if #instances > 0 then
-			pcall(function()
-				wax.shared.ContentProvider:PreloadAsync(instances)
-			end)
-		end
-
-		for _, img in ipairs(instances) do
-			img:Destroy()
-		end
+		return StringMap[str]
 	end
+
+	local Total = #AllCalls
+	for i, CallData in ipairs(AllCalls) do
+		if UpdateProgress then
+			UpdateProgress(i / Total)
+		end
+
+		local event = {
+			Type = InternString(CallData.Type or "Unknown"),
+			Remote = InternString(CallData.RemoteName or "Unknown"),
+			ClassName = InternString(CallData.ClassName or "Unknown"),
+			Time = CallData.Time or 0,
+			ArgCount = CallData.ArgCount or 0,
+		}
+
+		table.insert(Events, event)
+	end
+
+	return Events, StringMap
 end
 
-return ImageFetch
+function SessionExporter:ExportSessionToHTML(Events, StringMap, SessionData)
+	local ReverseStringMap = {}
+	for str, idx in pairs(StringMap) do
+		ReverseStringMap[idx] = str
+	end
+
+	local eventsJson = wax.shared.HttpService:JSONEncode(Events)
+	local stringMapJson = wax.shared.HttpService:JSONEncode(ReverseStringMap)
+
+	local SessionId = SessionData.SessionId or wax.shared.HttpService:GenerateGUID(false)
+	local StartTime = SessionData.StartTime or 0
+	local EndTime = SessionData.EndTime or tick()
+	local PlaceId = SessionData.PlaceId or game.PlaceId
+	local Duration = string.format("%.1f", EndTime - StartTime)
+
+	local HTML = [[<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nova - Session Viewer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+            background: #0d1117;
+            color: #c9d1d9;
+        }
+        .header {
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+            padding: 12px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .brand {
+            font-weight: 700;
+            font-size: 16px;
+            color: #58a6ff;
+        }
+        .session-info {
+            font-size: 12px;
+            color: #8b949e;
+        }
+        .content {
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .stats {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 16px;
+            flex: 1;
+        }
+        .stat-label {
+            font-size: 11px;
+            color: #8b949e;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #f0f6fc;
+        }
+        .event-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .event-table th {
+            background: #21262d;
+            padding: 8px 12px;
+            text-align: left;
+            font-size: 12px;
+            color: #8b949e;
+            font-weight: 600;
+        }
+        .event-table td {
+            padding: 6px 12px;
+            border-top: 1px solid #21262d;
+            font-size: 13px;
+        }
+        .type-incoming { color: #3fb950; }
+        .type-outgoing { color: #f78166; }
+        .footer {
+            padding: 12px 20px;
+            text-align: center;
+            color: #484f58;
+            font-size: 11px;
+            border-top: 1px solid #30363d;
+            margin-top: 40px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="brand">Nova - Session Viewer</div>
+        <div class="session-info">Session / ]] .. SessionId .. [[</div>
+    </div>
+    <div class="content">
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-label">Total Events</div>
+                <div class="stat-value">]] .. tostring(#Events) .. [[</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Duration</div>
+                <div class="stat-value">]] .. Duration .. [[s</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Place ID</div>
+                <div class="stat-value">]] .. tostring(PlaceId) .. [[</div>
+            </div>
+        </div>
+        <table class="event-table">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Type</th>
+                    <th>Remote</th>
+                    <th>Class</th>
+                    <th>Time</th>
+                    <th>Args</th>
+                </tr>
+            </thead>
+            <tbody id="eventBody"></tbody>
+        </table>
+    </div>
+    <div class="footer">Generated by Nova Remote Spy</div>
+    <script>
+        const events = ]] .. eventsJson .. [[;
+        const stringMap = ]] .. stringMapJson .. [[;
+        const body = document.getElementById('eventBody');
+        events.forEach((e, i) => {
+            const type = stringMap[e.Type] || 'Unknown';
+            const typeClass = type === 'Incoming' ? 'type-incoming' : 'type-outgoing';
+            body.innerHTML += `<tr>
+                <td>${i + 1}</td>
+                <td class="${typeClass}">${type}</td>
+                <td>${stringMap[e.Remote] || 'Unknown'}</td>
+                <td>${stringMap[e.ClassName] || 'Unknown'}</td>
+                <td>${e.Time.toFixed(3)}s</td>
+                <td>${e.ArgCount}</td>
+            </tr>`;
+        });
+    </script>
+</body>
+</html>]]
+
+	return HTML
+end
+
+return SessionExporter
 
 end)() end,
     [22] = function()local wax,script,require=ImportGlobals(22)local ImportGlobals return (function(...)--[[
@@ -3115,6 +3311,25 @@ CreateInfoDropdownButton("code", "Code", {
 			end
 		end,
 	},
+	{
+		Text = "Copy Args Table",
+		Icon = "list",
+		Condition = function()
+			return CurrentDetailCallInfo and CurrentDetailCallInfo.Args and #CurrentDetailCallInfo.Args > 0
+		end,
+		Callback = function()
+			if not (CurrentDetailCallInfo and CurrentDetailCallInfo.Args) then return end
+			local argEntries = {}
+			for _, arg in ipairs(CurrentDetailCallInfo.Args) do
+				table.insert(argEntries, "\t" .. CodeGen.SmartSerializeValue(arg))
+			end
+			local argsStr = "{\n" .. table.concat(argEntries, ",\n") .. "\n}"
+			local success = pcall(setclipboard, argsStr)
+			if success then
+				wax.shared.Sonner.success("Copied args table")
+			end
+		end,
+	},
 })
 
 -- ===== ORIGIN dropdown =====
@@ -3211,6 +3426,50 @@ CreateInfoDropdownButton("git-branch", "Event", {
 		end,
 	},
 	{
+		Text = "Replay x5",
+		Icon = "play",
+		Condition = function()
+			return CurrentDetailLogEntry and CurrentDetailLogEntry.Type == "Outgoing" and CurrentDetailCallInfo
+		end,
+		Callback = function()
+			if not (CurrentDetailLogEntry and CurrentDetailCallInfo) then
+				return
+			end
+			wax.shared.Sonner.promise(function()
+				for i = 1, 5 do
+					wax.shared.ReplayCallInfo(CurrentDetailCallInfo, CurrentDetailLogEntry.Type)
+					if i < 5 then task.wait(0.1) end
+				end
+			end, {
+				loadingText = "Replaying x5...",
+				successText = "Replayed x5!",
+				errorText = "Failed to replay",
+			})
+		end,
+	},
+	{
+		Text = "Replay x10",
+		Icon = "play",
+		Condition = function()
+			return CurrentDetailLogEntry and CurrentDetailLogEntry.Type == "Outgoing" and CurrentDetailCallInfo
+		end,
+		Callback = function()
+			if not (CurrentDetailLogEntry and CurrentDetailCallInfo) then
+				return
+			end
+			wax.shared.Sonner.promise(function()
+				for i = 1, 10 do
+					wax.shared.ReplayCallInfo(CurrentDetailCallInfo, CurrentDetailLogEntry.Type)
+					if i < 10 then task.wait(0.05) end
+				end
+			end, {
+				loadingText = "Replaying x10...",
+				successText = "Replayed x10!",
+				errorText = "Failed to replay",
+			})
+		end,
+	},
+	{
 		Text = function()
 			if CurrentDetailLogEntry and CurrentDetailLogEntry.Ignored then
 				return "Unignore"
@@ -3252,6 +3511,65 @@ CreateInfoDropdownButton("git-branch", "Event", {
 			if not CurrentDetailLogEntry then return end
 			CurrentDetailLogEntry:Block()
 			wax.shared.Sonner.success(`{CurrentDetailLogEntry.Blocked and "Blocking" or "Unblocked"} {CurrentDetailLogEntry.Instance.Name}`)
+		end,
+	},
+	{
+		Text = "Block by Name",
+		Icon = "lock",
+		Condition = function()
+			return CurrentDetailLogEntry ~= nil
+		end,
+		Callback = function()
+			if not CurrentDetailLogEntry then return end
+			local name = CurrentDetailLogEntry.Instance.Name
+			local count = 0
+			for _, logType in pairs({"Outgoing", "Incoming"}) do
+				for _, log in pairs(wax.shared.Logs[logType]) do
+					if log.Instance and log.Instance.Name == name and not log.Blocked then
+						log:Block()
+						count += 1
+					end
+				end
+			end
+			wax.shared.Sonner.success(`Blocked {count} remotes named "{name}"`)
+		end,
+	},
+	{
+		Text = "Ignore by Name",
+		Icon = "eye-off",
+		Condition = function()
+			return CurrentDetailLogEntry ~= nil
+		end,
+		Callback = function()
+			if not CurrentDetailLogEntry then return end
+			local name = CurrentDetailLogEntry.Instance.Name
+			local count = 0
+			for _, logType in pairs({"Outgoing", "Incoming"}) do
+				for _, log in pairs(wax.shared.Logs[logType]) do
+					if log.Instance and log.Instance.Name == name and not log.Ignored then
+						log:Ignore()
+						count += 1
+					end
+				end
+			end
+			wax.shared.Sonner.success(`Ignored {count} remotes named "{name}"`)
+		end,
+	},
+	{
+		Text = "Clear Logs",
+		Icon = "trash-2",
+		Condition = function()
+			return CurrentDetailLogEntry ~= nil
+		end,
+		Callback = function()
+			if not CurrentDetailLogEntry then return end
+			CurrentDetailLogEntry.Calls = {}
+			CurrentDetailLogEntry.GameCalls = {}
+			CurrentDetailLogEntry.TotalCallCount = 0
+			if CurrentLog == CurrentDetailLogEntry then
+				ShowLog(CurrentDetailLogEntry)
+			end
+			wax.shared.Sonner.success(`Cleared logs for {CurrentDetailLogEntry.Instance.Name}`)
 		end,
 	},
 })
@@ -3423,9 +3741,15 @@ function ShowCallDetails(logEntry, callInfo, callIndex)
 
 	if callInfo.Args and #callInfo.Args > 0 then
 		for i, arg in ipairs(callInfo.Args) do
-			local argRow = Interface.New("Frame", {
+			local argColor = SyntaxHighlighter.GetArgumentColor(arg)
+			local valueStr = Helper.QuickSerializeArgument(arg)
+
+			-- Clickable arg row (copies value on click)
+			local argRow = Interface.New("TextButton", {
+				Text = "",
 				BackgroundColor3 = Theme.Surface,
-				Size = UDim2.new(1, 0, 0, 24),
+				Size = UDim2.new(1, 0, 0, 26),
+				AutoButtonColor = false,
 				ZIndex = 52,
 				Parent = argsPage,
 				["UICorner"] = { CornerRadius = UDim.new(0, 4) },
@@ -3434,6 +3758,17 @@ function ShowCallDetails(logEntry, callInfo, callIndex)
 					PaddingRight = UDim.new(0, 8),
 				},
 			})
+
+			Helper.HoverEffect(argRow, Theme.SurfaceHover, Theme.Surface)
+
+			-- Click to copy this argument
+			local argSerializedForCopy = CodeGen.SmartSerializeValue(arg)
+			argRow.MouseButton1Click:Connect(function()
+				local success = pcall(setclipboard, argSerializedForCopy)
+				if success then
+					wax.shared.Sonner.success(`Copied arg #{i}`)
+				end
+			end)
 
 			-- Arg index
 			Interface.New("TextLabel", {
@@ -3449,11 +3784,9 @@ function ShowCallDetails(logEntry, callInfo, callIndex)
 			})
 
 			-- Value
-			local argColor = SyntaxHighlighter.GetArgumentColor(arg)
-			local valueStr = Helper.QuickSerializeArgument(arg)
 			Interface.New("TextLabel", {
 				BackgroundTransparency = 1,
-				Size = UDim2.new(1, -80, 1, 0),
+				Size = UDim2.new(1, -100, 1, 0),
 				Position = UDim2.new(0, 24, 0, 0),
 				Text = valueStr,
 				TextColor3 = argColor,
@@ -3465,20 +3798,103 @@ function ShowCallDetails(logEntry, callInfo, callIndex)
 				Parent = argRow,
 			})
 
-			-- Type
-			Interface.New("TextLabel", {
-				BackgroundTransparency = 1,
-				Size = UDim2.new(0, 50, 1, 0),
-				Position = UDim2.new(1, -50, 0, 0),
-				Text = typeof(arg),
-				TextColor3 = Theme.TextMuted,
-				TextSize = 10,
-				Font = Enum.Font.GothamMedium,
-				TextXAlignment = Enum.TextXAlignment.Right,
+			-- Type badge
+			local typeBadge = Interface.New("Frame", {
+				BackgroundColor3 = argColor,
+				BackgroundTransparency = 0.85,
+				Size = UDim2.new(0, 0, 0, 16),
+				AutomaticSize = Enum.AutomaticSize.X,
+				Position = UDim2.new(1, 0, 0.5, 0),
+				AnchorPoint = Vector2.new(1, 0.5),
 				ZIndex = 53,
 				Parent = argRow,
+				["UICorner"] = { CornerRadius = UDim.new(0, 3) },
+				["UIPadding"] = {
+					PaddingLeft = UDim.new(0, 4),
+					PaddingRight = UDim.new(0, 4),
+				},
 			})
+
+			Interface.New("TextLabel", {
+				BackgroundTransparency = 1,
+				Size = UDim2.new(0, 0, 1, 0),
+				AutomaticSize = Enum.AutomaticSize.X,
+				Text = typeof(arg),
+				TextColor3 = argColor,
+				TextSize = 9,
+				Font = Enum.Font.GothamBold,
+				TextXAlignment = Enum.TextXAlignment.Center,
+				ZIndex = 54,
+				Parent = typeBadge,
+			})
+
+			-- Copy icon hint
+			local copyHint = Interface.New("ImageLabel", {
+				BackgroundTransparency = 1,
+				Size = UDim2.fromOffset(10, 10),
+				Position = UDim2.new(0, 14, 0.5, 0),
+				AnchorPoint = Vector2.new(0, 0.5),
+				ImageColor3 = Theme.TextMuted,
+				ImageTransparency = 1,
+				ZIndex = 54,
+				Parent = argRow,
+			})
+			Icons.ApplyIcon(copyHint, "copy")
+
+			argRow.MouseEnter:Connect(function()
+				wax.shared.TweenService:Create(copyHint, TweenInfo.new(0.15), { ImageTransparency = 0.3 }):Play()
+			end)
+			argRow.MouseLeave:Connect(function()
+				wax.shared.TweenService:Create(copyHint, TweenInfo.new(0.15), { ImageTransparency = 1 }):Play()
+			end)
 		end
+
+		-- Copy All Args button
+		local copyAllArgsBtn = Interface.New("TextButton", {
+			Text = "",
+			BackgroundColor3 = Theme.Accent,
+			BackgroundTransparency = 0.85,
+			Size = UDim2.new(1, 0, 0, 28),
+			AutoButtonColor = false,
+			ZIndex = 52,
+			Parent = argsPage,
+			["UICorner"] = { CornerRadius = UDim.new(0, 5) },
+		})
+
+		local copyAllIcon = Interface.New("ImageLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.fromOffset(12, 12),
+			Position = UDim2.new(0.5, -56, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			ImageColor3 = Theme.Accent,
+			ZIndex = 53,
+			Parent = copyAllArgsBtn,
+		})
+		Icons.ApplyIcon(copyAllIcon, "copy")
+
+		Interface.New("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(0, 100, 1, 0),
+			Position = UDim2.new(0.5, -40, 0, 0),
+			Text = "Copy All Args",
+			TextColor3 = Theme.Accent,
+			TextSize = 11,
+			Font = Enum.Font.GothamBold,
+			ZIndex = 53,
+			Parent = copyAllArgsBtn,
+		})
+
+		copyAllArgsBtn.MouseButton1Click:Connect(function()
+			local argEntries = {}
+			for _, arg in ipairs(callInfo.Args) do
+				table.insert(argEntries, CodeGen.SmartSerializeValue(arg))
+			end
+			local argsStr = "{\n" .. table.concat(argEntries, ",\n") .. "\n}"
+			local success = pcall(setclipboard, argsStr)
+			if success then
+				wax.shared.Sonner.success("Copied all arguments")
+			end
+		end)
 	else
 		Interface.New("TextLabel", {
 			BackgroundTransparency = 1,
@@ -3495,199 +3911,171 @@ function ShowCallDetails(logEntry, callInfo, callIndex)
 	-- ========== CODE TAB ==========
 	local codePage = InfoTabPages["Code"]
 
-	-- Calling Code - syntax highlighted
-	Interface.New("TextLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1, 0, 0, 18),
-		Text = "Calling Code",
-		TextColor3 = Theme.Text,
-		TextSize = 12,
-		Font = Enum.Font.GothamBold,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		ZIndex = 52,
-		Parent = codePage,
-	})
+	-- Helper: Create a code block with header, line numbers, copy button
+	local function CreateCodeBlock(parent, title, code, accentColor)
+		accentColor = accentColor or Theme.Accent
+
+		-- Header with title and copy button
+		local header = Interface.New("Frame", {
+			BackgroundColor3 = Color3.fromRGB(18, 18, 18),
+			Size = UDim2.new(1, 0, 0, 28),
+			ZIndex = 52,
+			Parent = parent,
+			["UICorner"] = { CornerRadius = UDim.new(0, 6) },
+		})
+
+		-- Accent bar on left
+		Interface.New("Frame", {
+			BackgroundColor3 = accentColor,
+			Size = UDim2.new(0, 3, 1, -8),
+			Position = UDim2.new(0, 4, 0, 4),
+			ZIndex = 53,
+			Parent = header,
+			["UICorner"] = { CornerRadius = UDim.new(0, 2) },
+		})
+
+		Interface.New("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, -80, 1, 0),
+			Position = UDim2.new(0, 14, 0, 0),
+			Text = title,
+			TextColor3 = Theme.Text,
+			TextSize = 11,
+			Font = Enum.Font.GothamBold,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			ZIndex = 53,
+			Parent = header,
+		})
+
+		-- Copy button in header
+		local copyBtn = Interface.New("TextButton", {
+			Text = "",
+			BackgroundColor3 = accentColor,
+			BackgroundTransparency = 0.85,
+			Size = UDim2.fromOffset(60, 20),
+			Position = UDim2.new(1, -64, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			AutoButtonColor = false,
+			ZIndex = 53,
+			Parent = header,
+			["UICorner"] = { CornerRadius = UDim.new(0, 4) },
+		})
+
+		local copyIcoInHeader = Interface.New("ImageLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.fromOffset(10, 10),
+			Position = UDim2.new(0, 6, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			ImageColor3 = accentColor,
+			ZIndex = 54,
+			Parent = copyBtn,
+		})
+		Icons.ApplyIcon(copyIcoInHeader, "copy")
+
+		Interface.New("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, -20, 1, 0),
+			Position = UDim2.new(0, 18, 0, 0),
+			Text = "Copy",
+			TextColor3 = accentColor,
+			TextSize = 10,
+			Font = Enum.Font.GothamBold,
+			ZIndex = 54,
+			Parent = copyBtn,
+		})
+
+		copyBtn.MouseButton1Click:Connect(function()
+			local success = pcall(setclipboard, code)
+			if success then
+				wax.shared.Sonner.success(`Copied {string.lower(title)}`)
+			end
+		end)
+
+		-- Code body with line numbers
+		local codeBody = Interface.New("Frame", {
+			BackgroundColor3 = Color3.fromRGB(8, 8, 8),
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			ZIndex = 52,
+			Parent = parent,
+			["UICorner"] = { CornerRadius = UDim.new(0, 6) },
+			["UIStroke"] = {
+				Color = Color3.fromRGB(30, 30, 30),
+				Thickness = 1,
+			},
+		})
+
+		-- Line numbers column
+		local codeLines = string.split(code, "\n")
+		local lineNums = {}
+		for lineIdx = 1, #codeLines do
+			table.insert(lineNums, tostring(lineIdx))
+		end
+
+		local lineNumFrame = Interface.New("Frame", {
+			BackgroundColor3 = Color3.fromRGB(15, 15, 15),
+			Size = UDim2.new(0, 28, 1, 0),
+			ZIndex = 52,
+			Parent = codeBody,
+			["UICorner"] = { CornerRadius = UDim.new(0, 6) },
+		})
+
+		Interface.New("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			Position = UDim2.new(0, 0, 0, 8),
+			Text = table.concat(lineNums, "\n"),
+			TextColor3 = Theme.TextMuted,
+			TextTransparency = 0.5,
+			TextSize = 12,
+			Font = Enum.Font.Code,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			ZIndex = 53,
+			Parent = lineNumFrame,
+		})
+
+		-- Code content
+		local highlighted = SyntaxHighlighter.Highlight(code)
+		Interface.New("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, -36, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			Position = UDim2.new(0, 34, 0, 8),
+			Text = highlighted,
+			TextColor3 = SyntaxHighlighter.Colors.Default,
+			TextSize = 12,
+			Font = Enum.Font.Code,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			TextWrapped = true,
+			RichText = true,
+			ZIndex = 53,
+			Parent = codeBody,
+		})
+
+		-- Bottom padding
+		Interface.New("Frame", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, 0, 0, 8),
+			Parent = codeBody,
+		})
+	end
 
 	local callingCode = CodeGen.GenerateCode(logEntry, callInfo)
-	local highlightedCalling = SyntaxHighlighter.Highlight(callingCode)
+	CreateCodeBlock(codePage, "Calling Code", callingCode, Theme.Accent)
 
-	local callingCodeFrame = Interface.New("Frame", {
-		BackgroundColor3 = Color3.fromRGB(0, 0, 0),
-		Size = UDim2.new(1, 0, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		ZIndex = 52,
-		Parent = codePage,
-		["UICorner"] = { CornerRadius = UDim.new(0, 6) },
-		["UIStroke"] = {
-			Color = Color3.fromRGB(25, 25, 25),
-			Thickness = 1,
-		},
-		["UIPadding"] = {
-			PaddingLeft = UDim.new(0, 8),
-			PaddingRight = UDim.new(0, 8),
-			PaddingTop = UDim.new(0, 8),
-			PaddingBottom = UDim.new(0, 8),
-		},
-	})
-
-	Interface.New("TextLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1, 0, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		Text = highlightedCalling,
-		TextColor3 = SyntaxHighlighter.Colors.Default,
-		TextSize = 12,
-		Font = Enum.Font.Code,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextYAlignment = Enum.TextYAlignment.Top,
-		TextWrapped = true,
-		RichText = true,
-		ZIndex = 53,
-		Parent = callingCodeFrame,
-	})
-
-	-- Copy Calling Code button
-	local copyCallingBtn = Interface.New("TextButton", {
-		Text = "",
-		BackgroundColor3 = Color3.fromRGB(25, 25, 25),
-		Size = UDim2.new(1, 0, 0, 28),
-		AutoButtonColor = false,
-		ZIndex = 52,
-		Parent = codePage,
-		["UICorner"] = { CornerRadius = UDim.new(0, 5) },
-	})
-
-	local copyIco = Interface.New("ImageLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(12, 12),
-		Position = UDim2.new(0.5, -46, 0.5, 0),
-		AnchorPoint = Vector2.new(0, 0.5),
-		ImageColor3 = Theme.TextMuted,
-		ZIndex = 53,
-		Parent = copyCallingBtn,
-	})
-	Icons.ApplyIcon(copyIco, "copy")
-
-	Interface.New("TextLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.new(0, 80, 1, 0),
-		Position = UDim2.new(0.5, -30, 0, 0),
-		Text = "Copy Code",
-		TextColor3 = Theme.Text,
-		TextSize = 11,
-		Font = Enum.Font.GothamMedium,
-		ZIndex = 53,
-		Parent = copyCallingBtn,
-	})
-
-	Helper.HoverEffect(copyCallingBtn, Color3.fromRGB(35, 35, 35), Color3.fromRGB(25, 25, 25))
-	copyCallingBtn.MouseButton1Click:Connect(function()
-		local success = pcall(setclipboard, callingCode)
-		if success then
-			wax.shared.Sonner.success("Copied calling code")
-		end
-	end)
-
-	-- Separator
+	-- Spacer
 	Interface.New("Frame", {
-		BackgroundColor3 = Theme.Border,
-		Size = UDim2.new(1, 0, 0, 1),
-		ZIndex = 52,
-		Parent = codePage,
-	})
-
-	-- Intercept Code - syntax highlighted
-	Interface.New("TextLabel", {
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, 0, 0, 18),
-		Text = "Intercept Code",
-		TextColor3 = Theme.Text,
-		TextSize = 12,
-		Font = Enum.Font.GothamBold,
-		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, 0, 0, 4),
 		ZIndex = 52,
 		Parent = codePage,
 	})
 
 	local interceptCode = CodeGen.GenerateInterceptCode(logEntry)
-	local highlightedIntercept = SyntaxHighlighter.Highlight(interceptCode)
-
-	local interceptCodeFrame = Interface.New("Frame", {
-		BackgroundColor3 = Color3.fromRGB(0, 0, 0),
-		Size = UDim2.new(1, 0, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		ZIndex = 52,
-		Parent = codePage,
-		["UICorner"] = { CornerRadius = UDim.new(0, 6) },
-		["UIStroke"] = {
-			Color = Color3.fromRGB(25, 25, 25),
-			Thickness = 1,
-		},
-		["UIPadding"] = {
-			PaddingLeft = UDim.new(0, 8),
-			PaddingRight = UDim.new(0, 8),
-			PaddingTop = UDim.new(0, 8),
-			PaddingBottom = UDim.new(0, 8),
-		},
-	})
-
-	Interface.New("TextLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1, 0, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		Text = highlightedIntercept,
-		TextColor3 = SyntaxHighlighter.Colors.Default,
-		TextSize = 12,
-		Font = Enum.Font.Code,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextYAlignment = Enum.TextYAlignment.Top,
-		TextWrapped = true,
-		RichText = true,
-		ZIndex = 53,
-		Parent = interceptCodeFrame,
-	})
-
-	-- Copy Intercept button
-	local copyInterceptBtn = Interface.New("TextButton", {
-		Text = "",
-		BackgroundColor3 = Color3.fromRGB(25, 25, 25),
-		Size = UDim2.new(1, 0, 0, 28),
-		AutoButtonColor = false,
-		ZIndex = 52,
-		Parent = codePage,
-		["UICorner"] = { CornerRadius = UDim.new(0, 5) },
-	})
-
-	local copyIco2 = Interface.New("ImageLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(12, 12),
-		Position = UDim2.new(0.5, -62, 0.5, 0),
-		AnchorPoint = Vector2.new(0, 0.5),
-		ImageColor3 = Theme.TextMuted,
-		ZIndex = 53,
-		Parent = copyInterceptBtn,
-	})
-	Icons.ApplyIcon(copyIco2, "shield-alert")
-
-	Interface.New("TextLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.new(0, 110, 1, 0),
-		Position = UDim2.new(0.5, -46, 0, 0),
-		Text = "Copy Intercept",
-		TextColor3 = Theme.Text,
-		TextSize = 11,
-		Font = Enum.Font.GothamMedium,
-		ZIndex = 53,
-		Parent = copyInterceptBtn,
-	})
-
-	Helper.HoverEffect(copyInterceptBtn, Color3.fromRGB(35, 35, 35), Color3.fromRGB(25, 25, 25))
-	copyInterceptBtn.MouseButton1Click:Connect(function()
-		local success = pcall(setclipboard, interceptCode)
-		if success then
-			wax.shared.Sonner.success("Copied intercept code")
-		end
-	end)
+	CreateCodeBlock(codePage, "Intercept Code", interceptCode, Theme.Warning)
 
 	-- ========== DECOMPILE TAB ==========
 	local decompilePage = InfoTabPages["Decompile"]
@@ -5690,156 +6078,211 @@ end
 return CodeGen
 
 end)() end,
-    [9] = function()local wax,script,require=ImportGlobals(9)local ImportGlobals return (function(...)--[[
-	Nova - Incoming Remote Hooks
-	Hooks OnClientEvent connections to monitor incoming remote calls.
+    [30] = function()local wax,script,require=ImportGlobals(30)local ImportGlobals return (function(...)--[[
+	Helper Module for Nova
+	Various UI utility functions.
 ]]
 
-local Log = require(script.Parent.Parent.Parent.Parent.Utils.Log)
+local Helper = {}
 
-local IgnorePlayerModule = wax.shared.SaveManager:GetState("IgnorePlayerModule", true)
-local IgnoredRemotesDropdown = wax.shared.SaveManager:GetState("IgnoredRemotesDropdown", {
-	["BindableEvent"] = true,
-	["BindableFunction"] = true,
-})
+function Helper.Ripple(button: TextButton | ImageButton, color: Color3?)
+	color = color or Color3.fromRGB(255, 255, 255)
 
-local ClassToConnection = {
-	RemoteEvent = "OnClientEvent",
-	UnreliableRemoteEvent = "OnClientEvent",
-	RemoteFunction = "OnClientInvoke",
-	BindableEvent = "Event",
-	BindableFunction = "OnInvoke",
-}
+	button.ClipsDescendants = true
 
-local function ShouldIgnore(instance)
-	if instance == wax.shared.Communicator then
-		return true
-	end
+	button.MouseButton1Click:Connect(function()
+		local mouse = game:GetService("UserInputService"):GetMouseLocation()
+		local absolutePos = button.AbsolutePosition
+		local relativeX = mouse.X - absolutePos.X
+		local relativeY = mouse.Y - absolutePos.Y
 
-	if IgnoredRemotesDropdown[instance.ClassName] then
-		return true
-	end
+		local circle = Instance.new("Frame")
+		circle.BackgroundColor3 = color
+		circle.BackgroundTransparency = 0.7
+		circle.Position = UDim2.fromOffset(relativeX, relativeY)
+		circle.AnchorPoint = Vector2.new(0.5, 0.5)
+		circle.Size = UDim2.fromOffset(0, 0)
 
-	if IgnorePlayerModule then
-		local fullName = instance:GetFullName()
-		if string.find(fullName, "PlayerModule") or string.find(fullName, "PlayerScripts") then
-			return true
-		end
-	end
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(1, 0)
+		corner.Parent = circle
 
-	return false
-end
+		circle.Parent = button
 
-local function GetCallingScript()
-	if not getcallingscript then
-		return nil
-	end
+		local size = math.max(button.AbsoluteSize.X, button.AbsoluteSize.Y) * 2
+		local tween = wax.shared.TweenService:Create(circle, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Size = UDim2.fromOffset(size, size),
+			BackgroundTransparency = 1,
+		})
 
-	local success, result = pcall(getcallingscript)
-	return success and result or nil
-end
-
-local function ProcessIncomingCall(instance, method, args)
-	if ShouldIgnore(instance) then
-		return
-	end
-
-	local LogEntry = wax.shared.Logs.Incoming[instance]
-	if not LogEntry then
-		LogEntry = Log.new(instance, "Incoming", method, nil, GetCallingScript())
-		wax.shared.Logs.Incoming[instance] = LogEntry
-	end
-
-	local CallInfo = {
-		Args = args,
-		Method = method,
-		IsExecutor = false,
-		Instance = instance,
-		Origin = GetCallingScript(),
-		Traceback = debug and debug.traceback and debug.traceback() or nil,
-	}
-
-	LogEntry:Call(CallInfo)
-end
-
--- Hook remote events for incoming signals
-local function HookRemote(remote)
-	if ShouldIgnore(remote) then
-		return
-	end
-
-	local className = remote.ClassName
-	local connectionName = ClassToConnection[className]
-
-	if not connectionName then
-		return
-	end
-
-	-- For RemoteEvent/UnreliableRemoteEvent - monitor OnClientEvent
-	if className == "RemoteEvent" or className == "UnreliableRemoteEvent" then
-		wax.shared.Connect(remote[connectionName]:Connect(function(...)
-			local args = { ... }
-			ProcessIncomingCall(remote, connectionName, args)
-		end))
-	end
-
-	-- For RemoteFunction - wrap OnClientInvoke
-	if className == "RemoteFunction" then
-		local originalInvoke = remote.OnClientInvoke
-		if originalInvoke then
-			remote.OnClientInvoke = function(...)
-				local args = { ... }
-				ProcessIncomingCall(remote, "OnClientInvoke", args)
-				return originalInvoke(...)
-			end
-		end
-	end
-end
-
--- Hook existing remotes
-local function ScanAndHookRemotes()
-	local services = {
-		game:GetService("ReplicatedStorage"),
-		game:GetService("Workspace"),
-		game:GetService("ReplicatedFirst"),
-		game:GetService("Players"),
-		game:GetService("Lighting"),
-		game:GetService("StarterGui"),
-	}
-
-	-- Also check nil instances if available
-	if getnilinstances then
-		local success, nilInstances = pcall(getnilinstances)
-		if success and nilInstances then
-			for _, inst in pairs(nilInstances) do
-				if inst:IsA("RemoteEvent") or inst:IsA("RemoteFunction") or inst:IsA("UnreliableRemoteEvent") then
-					pcall(HookRemote, inst)
-				end
-			end
-		end
-	end
-
-	for _, service in pairs(services) do
-		pcall(function()
-			for _, descendant in pairs(service:GetDescendants()) do
-				if descendant:IsA("RemoteEvent") or descendant:IsA("RemoteFunction") or descendant:IsA("UnreliableRemoteEvent") then
-					pcall(HookRemote, descendant)
-				end
-			end
-
-			-- Watch for new remotes
-			wax.shared.Connect(service.DescendantAdded:Connect(function(descendant)
-				if descendant:IsA("RemoteEvent") or descendant:IsA("RemoteFunction") or descendant:IsA("UnreliableRemoteEvent") then
-					task.defer(HookRemote, descendant)
-				end
-			end))
+		tween:Play()
+		tween.Completed:Connect(function()
+			circle:Destroy()
 		end)
+	end)
+end
+
+function Helper.HoverEffect(button: GuiObject, hoverColor: Color3?, normalColor: Color3?)
+	normalColor = normalColor or button.BackgroundColor3
+	hoverColor = hoverColor or Color3.fromRGB(
+		math.min(normalColor.R * 255 + 20, 255) / 255,
+		math.min(normalColor.G * 255 + 20, 255) / 255,
+		math.min(normalColor.B * 255 + 20, 255) / 255
+	)
+
+	button.MouseEnter:Connect(function()
+		wax.shared.TweenService:Create(button, TweenInfo.new(0.15), {
+			BackgroundColor3 = hoverColor,
+		}):Play()
+	end)
+
+	button.MouseLeave:Connect(function()
+		wax.shared.TweenService:Create(button, TweenInfo.new(0.15), {
+			BackgroundColor3 = normalColor,
+		}):Play()
+	end)
+end
+
+function Helper.Truncate(text: string, maxLength: number): string
+	if #text <= maxLength then
+		return text
+	end
+	return string.sub(text, 1, maxLength - 3) .. "..."
+end
+
+function Helper.FormatNumber(num: number): string
+	if num >= 1000000 then
+		return string.format("%.1fM", num / 1000000)
+	elseif num >= 1000 then
+		return string.format("%.1fK", num / 1000)
+	end
+	return tostring(num)
+end
+
+function Helper.QuickSerializeArgument(value): string
+	local t = typeof(value)
+	if t == "string" then
+		local display = value
+		-- Detect GUID pattern
+		if string.match(display, "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$") then
+			return "GUID"
+		end
+		if #display > 50 then
+			display = string.sub(display, 1, 47) .. "..."
+		end
+		-- Escape control characters for display
+		display = string.gsub(display, "[%c]", ".")
+		return `"{display}"`
+	elseif t == "Instance" then
+		local ok, fullName = pcall(function() return value:GetFullName() end)
+		if ok then
+			return fullName
+		end
+		return `[Instance] {tostring(value)}`
+	elseif t == "boolean" then
+		return tostring(value)
+	elseif t == "number" then
+		if value ~= value then
+			return "nan"
+		elseif value == math.huge then
+			return "math.huge"
+		elseif value == -math.huge then
+			return "-math.huge"
+		elseif value == math.floor(value) and math.abs(value) > 1e9 then
+			-- Likely a timestamp
+			return `{value} (timestamp?)`
+		end
+		return tostring(value)
+	elseif t == "nil" then
+		return "nil"
+	elseif t == "EnumItem" then
+		return tostring(value)
+	elseif t == "Vector3" then
+		return `Vector3({string.format("%.2f, %.2f, %.2f", value.X, value.Y, value.Z)})`
+	elseif t == "Vector2" then
+		return `Vector2({string.format("%.2f, %.2f", value.X, value.Y)})`
+	elseif t == "CFrame" then
+		local pos = value.Position
+		return `CFrame({string.format("%.1f, %.1f, %.1f, ...", pos.X, pos.Y, pos.Z)})`
+	elseif t == "UDim2" then
+		return `UDim2({value.X.Scale}, {value.X.Offset}, {value.Y.Scale}, {value.Y.Offset})`
+	elseif t == "UDim" then
+		return `UDim({value.Scale}, {value.Offset})`
+	elseif t == "Color3" then
+		return `Color3({string.format("%.2f, %.2f, %.2f", value.R, value.G, value.B)})`
+	elseif t == "BrickColor" then
+		return `BrickColor("{tostring(value)}")`
+	elseif t == "table" then
+		local len = 0
+		local isArray = true
+		local preview = {}
+		for k, v in pairs(value) do
+			len += 1
+			if len <= 3 then
+				if type(k) ~= "number" or k ~= len then
+					isArray = false
+				end
+				local vStr = Helper.QuickSerializeArgument(v)
+				if #vStr > 20 then
+					vStr = string.sub(vStr, 1, 17) .. "..."
+				end
+				if isArray then
+					table.insert(preview, vStr)
+				else
+					table.insert(preview, `{tostring(k)} = {vStr}`)
+				end
+			end
+			if len > 10 then break end
+		end
+		local suffix = len > 3 and `, ... +{len - 3}` or ""
+		if len == 0 then
+			return "{}"
+		end
+		return `\{{table.concat(preview, ", ")}{suffix}}`
+	elseif t == "function" then
+		local info = debug and debug.info and pcall(debug.info, value, "n")
+		if info then
+			local ok, name = pcall(debug.info, value, "n")
+			if ok and name and name ~= "" then
+				return `function {name}()`
+			end
+		end
+		return "function()"
+	elseif t == "buffer" then
+		local size = buffer.len(value)
+		if size <= 8 then
+			local bytes = {}
+			for i = 0, size - 1 do
+				table.insert(bytes, string.format("%02X", buffer.readu8(value, i)))
+			end
+			return `buffer[{table.concat(bytes, " ")}]`
+		end
+		return `buffer({size} bytes)`
+	elseif t == "thread" then
+		return `thread({tostring(value)})`
+	elseif t == "Ray" then
+		return `Ray({string.format("%.1f, %.1f, %.1f", value.Origin.X, value.Origin.Y, value.Origin.Z)})`
+	elseif t == "NumberRange" then
+		return `NumberRange({value.Min}, {value.Max})`
+	elseif t == "NumberSequence" then
+		return `NumberSequence({#value.Keypoints} keypoints)`
+	elseif t == "ColorSequence" then
+		return `ColorSequence({#value.Keypoints} keypoints)`
+	elseif t == "Rect" then
+		return `Rect({value.Min.X}, {value.Min.Y}, {value.Max.X}, {value.Max.Y})`
+	else
+		return tostring(value)
 	end
 end
 
-task.spawn(ScanAndHookRemotes)
+function Helper.FormatTimestamp(timestamp: number): string
+	local seconds = math.floor(timestamp) % 60
+	local minutes = math.floor(timestamp / 60) % 60
+	local hours = math.floor(timestamp / 3600) % 24
+	return string.format("%02d:%02d:%02d", hours, minutes, seconds)
+end
 
-return {}
+return Helper
 
 end)() end,
     [27] = function()local wax,script,require=ImportGlobals(27)local ImportGlobals return (function(...)-- LuaEncode - Optimal Table Serialization for Native Luau/Lua 5.1+
@@ -6140,211 +6583,119 @@ end
 return LuaEncode
 
 end)() end,
-    [19] = function()local wax,script,require=ImportGlobals(19)local ImportGlobals return (function(...)--[[
-	Session Exporter for Nova
-	Exports logged session data to an HTML file.
+    [34] = function()local wax,script,require=ImportGlobals(34)local ImportGlobals return (function(...)--[[
+	Interface Module for Nova
+	Utility for creating UI elements with properties applied automatically.
 ]]
 
-local SessionExporter = {}
+local Interface = {}
 
-function SessionExporter:ProcessCalls(AllCalls, SessionData, UpdateProgress)
-	local Events = {}
-	local StringMap = {}
-	local StringIndex = 0
+local SpecialProperties = {
+	["UICorner"] = true,
+	["UIStroke"] = true,
+	["UIPadding"] = true,
+	["UIListLayout"] = true,
+	["UIGridLayout"] = true,
+	["UITableLayout"] = true,
+	["UIPageLayout"] = true,
+	["UIFlexItem"] = true,
+	["UISizeConstraint"] = true,
+	["UITextSizeConstraint"] = true,
+	["UIAspectRatioConstraint"] = true,
+	["UIGradient"] = true,
+	["UIScale"] = true,
+}
 
-	local function InternString(str)
-		if not StringMap[str] then
-			StringMap[str] = StringIndex
-			StringIndex += 1
+function Interface.New(className: string, properties: { [string]: any }?): Instance
+	local instance = Instance.new(className)
+
+	if properties then
+		for key, value in pairs(properties) do
+			if SpecialProperties[key] then
+				-- Create UI component as child
+				local uiComponent = Instance.new(key)
+				if type(value) == "table" then
+					for prop, val in pairs(value) do
+						uiComponent[prop] = val
+					end
+				end
+				uiComponent.Parent = instance
+			else
+				instance[key] = value
+			end
 		end
-		return StringMap[str]
 	end
 
-	local Total = #AllCalls
-	for i, CallData in ipairs(AllCalls) do
-		if UpdateProgress then
-			UpdateProgress(i / Total)
-		end
-
-		local event = {
-			Type = InternString(CallData.Type or "Unknown"),
-			Remote = InternString(CallData.RemoteName or "Unknown"),
-			ClassName = InternString(CallData.ClassName or "Unknown"),
-			Time = CallData.Time or 0,
-			ArgCount = CallData.ArgCount or 0,
-		}
-
-		table.insert(Events, event)
-	end
-
-	return Events, StringMap
+	return instance
 end
 
-function SessionExporter:ExportSessionToHTML(Events, StringMap, SessionData)
-	local ReverseStringMap = {}
-	for str, idx in pairs(StringMap) do
-		ReverseStringMap[idx] = str
+function Interface.CreateScreenGui(name: string)
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = name
+	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	screenGui.ResetOnSpawn = false
+	screenGui.DisplayOrder = 999999
+
+	-- Try gethui first, then CoreGui
+	local success, _ = pcall(function()
+		if gethui then
+			screenGui.Parent = gethui()
+		else
+			screenGui.Parent = wax.shared.CoreGui
+		end
+	end)
+
+	if not success then
+		pcall(function()
+			screenGui.Parent = wax.shared.Players.LocalPlayer:WaitForChild("PlayerGui")
+		end)
 	end
 
-	local eventsJson = wax.shared.HttpService:JSONEncode(Events)
-	local stringMapJson = wax.shared.HttpService:JSONEncode(ReverseStringMap)
-
-	local SessionId = SessionData.SessionId or wax.shared.HttpService:GenerateGUID(false)
-	local StartTime = SessionData.StartTime or 0
-	local EndTime = SessionData.EndTime or tick()
-	local PlaceId = SessionData.PlaceId or game.PlaceId
-	local Duration = string.format("%.1f", EndTime - StartTime)
-
-	local HTML = [[<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nova - Session Viewer</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
-            background: #0d1117;
-            color: #c9d1d9;
-        }
-        .header {
-            background: #161b22;
-            border-bottom: 1px solid #30363d;
-            padding: 12px 20px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .brand {
-            font-weight: 700;
-            font-size: 16px;
-            color: #58a6ff;
-        }
-        .session-info {
-            font-size: 12px;
-            color: #8b949e;
-        }
-        .content {
-            padding: 20px;
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-        .stats {
-            display: flex;
-            gap: 20px;
-            margin-bottom: 20px;
-        }
-        .stat-card {
-            background: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 6px;
-            padding: 16px;
-            flex: 1;
-        }
-        .stat-label {
-            font-size: 11px;
-            color: #8b949e;
-            text-transform: uppercase;
-            margin-bottom: 4px;
-        }
-        .stat-value {
-            font-size: 24px;
-            font-weight: 700;
-            color: #f0f6fc;
-        }
-        .event-table {
-            width: 100%;
-            border-collapse: collapse;
-            background: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 6px;
-            overflow: hidden;
-        }
-        .event-table th {
-            background: #21262d;
-            padding: 8px 12px;
-            text-align: left;
-            font-size: 12px;
-            color: #8b949e;
-            font-weight: 600;
-        }
-        .event-table td {
-            padding: 6px 12px;
-            border-top: 1px solid #21262d;
-            font-size: 13px;
-        }
-        .type-incoming { color: #3fb950; }
-        .type-outgoing { color: #f78166; }
-        .footer {
-            padding: 12px 20px;
-            text-align: center;
-            color: #484f58;
-            font-size: 11px;
-            border-top: 1px solid #30363d;
-            margin-top: 40px;
-        }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <div class="brand">Nova - Session Viewer</div>
-        <div class="session-info">Session / ]] .. SessionId .. [[</div>
-    </div>
-    <div class="content">
-        <div class="stats">
-            <div class="stat-card">
-                <div class="stat-label">Total Events</div>
-                <div class="stat-value">]] .. tostring(#Events) .. [[</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Duration</div>
-                <div class="stat-value">]] .. Duration .. [[s</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Place ID</div>
-                <div class="stat-value">]] .. tostring(PlaceId) .. [[</div>
-            </div>
-        </div>
-        <table class="event-table">
-            <thead>
-                <tr>
-                    <th>#</th>
-                    <th>Type</th>
-                    <th>Remote</th>
-                    <th>Class</th>
-                    <th>Time</th>
-                    <th>Args</th>
-                </tr>
-            </thead>
-            <tbody id="eventBody"></tbody>
-        </table>
-    </div>
-    <div class="footer">Generated by Nova Remote Spy</div>
-    <script>
-        const events = ]] .. eventsJson .. [[;
-        const stringMap = ]] .. stringMapJson .. [[;
-        const body = document.getElementById('eventBody');
-        events.forEach((e, i) => {
-            const type = stringMap[e.Type] || 'Unknown';
-            const typeClass = type === 'Incoming' ? 'type-incoming' : 'type-outgoing';
-            body.innerHTML += `<tr>
-                <td>${i + 1}</td>
-                <td class="${typeClass}">${type}</td>
-                <td>${stringMap[e.Remote] || 'Unknown'}</td>
-                <td>${stringMap[e.ClassName] || 'Unknown'}</td>
-                <td>${e.Time.toFixed(3)}s</td>
-                <td>${e.ArgCount}</td>
-            </tr>`;
-        });
-    </script>
-</body>
-</html>]]
-
-	return HTML
+	return screenGui
 end
 
-return SessionExporter
+function Interface.CreateImageLabel(properties)
+	local imageLabel = Interface.New("ImageLabel", properties)
+	return imageLabel
+end
+
+function Interface.CreateTextLabel(properties)
+	local defaults = {
+		BackgroundTransparency = 1,
+		TextColor3 = Color3.fromRGB(200, 200, 200),
+		TextSize = 14,
+		Font = Enum.Font.GothamMedium,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	}
+
+	for key, value in pairs(defaults) do
+		if properties[key] == nil then
+			properties[key] = value
+		end
+	end
+
+	return Interface.New("TextLabel", properties)
+end
+
+function Interface.CreateTextButton(properties)
+	local defaults = {
+		BackgroundTransparency = 1,
+		TextColor3 = Color3.fromRGB(200, 200, 200),
+		TextSize = 14,
+		Font = Enum.Font.GothamMedium,
+		AutoButtonColor = false,
+	}
+
+	for key, value in pairs(defaults) do
+		if properties[key] == nil then
+			properties[key] = value
+		end
+	end
+
+	return Interface.New("TextButton", properties)
+end
+
+return Interface
 
 end)() end,
     [23] = function()local wax,script,require=ImportGlobals(23)local ImportGlobals return (function(...)local Log = {}
@@ -6594,211 +6945,52 @@ end
 return SaveManager
 
 end)() end,
-    [30] = function()local wax,script,require=ImportGlobals(30)local ImportGlobals return (function(...)--[[
-	Helper Module for Nova
-	Various UI utility functions.
+    [33] = function()local wax,script,require=ImportGlobals(33)local ImportGlobals return (function(...)--[[
+	Image Fetcher for Nova
+	Handles fetching and caching images for UI elements.
 ]]
 
-local Helper = {}
+local ImageFetch = {}
 
-function Helper.Ripple(button: TextButton | ImageButton, color: Color3?)
-	color = color or Color3.fromRGB(255, 255, 255)
+local Cache = {}
 
-	button.ClipsDescendants = true
+local RemoteImages = {
+	RemoteEvent = "rbxassetid://4229806545",
+	RemoteFunction = "rbxassetid://4229806870",
+	UnreliableRemoteEvent = "rbxassetid://4229806545",
+	BindableEvent = "rbxassetid://4229806545",
+	BindableFunction = "rbxassetid://4229806870",
+}
 
-	button.MouseButton1Click:Connect(function()
-		local mouse = game:GetService("UserInputService"):GetMouseLocation()
-		local absolutePos = button.AbsolutePosition
-		local relativeX = mouse.X - absolutePos.X
-		local relativeY = mouse.Y - absolutePos.Y
-
-		local circle = Instance.new("Frame")
-		circle.BackgroundColor3 = color
-		circle.BackgroundTransparency = 0.7
-		circle.Position = UDim2.fromOffset(relativeX, relativeY)
-		circle.AnchorPoint = Vector2.new(0.5, 0.5)
-		circle.Size = UDim2.fromOffset(0, 0)
-
-		local corner = Instance.new("UICorner")
-		corner.CornerRadius = UDim.new(1, 0)
-		corner.Parent = circle
-
-		circle.Parent = button
-
-		local size = math.max(button.AbsoluteSize.X, button.AbsoluteSize.Y) * 2
-		local tween = wax.shared.TweenService:Create(circle, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-			Size = UDim2.fromOffset(size, size),
-			BackgroundTransparency = 1,
-		})
-
-		tween:Play()
-		tween.Completed:Connect(function()
-			circle:Destroy()
-		end)
-	end)
+function ImageFetch.GetRemoteImage(className: string): string
+	return RemoteImages[className] or "rbxassetid://4229806545"
 end
 
-function Helper.HoverEffect(button: GuiObject, hoverColor: Color3?, normalColor: Color3?)
-	normalColor = normalColor or button.BackgroundColor3
-	hoverColor = hoverColor or Color3.fromRGB(
-		math.min(normalColor.R * 255 + 20, 255) / 255,
-		math.min(normalColor.G * 255 + 20, 255) / 255,
-		math.min(normalColor.B * 255 + 20, 255) / 255
-	)
-
-	button.MouseEnter:Connect(function()
-		wax.shared.TweenService:Create(button, TweenInfo.new(0.15), {
-			BackgroundColor3 = hoverColor,
-		}):Play()
-	end)
-
-	button.MouseLeave:Connect(function()
-		wax.shared.TweenService:Create(button, TweenInfo.new(0.15), {
-			BackgroundColor3 = normalColor,
-		}):Play()
-	end)
-end
-
-function Helper.Truncate(text: string, maxLength: number): string
-	if #text <= maxLength then
-		return text
-	end
-	return string.sub(text, 1, maxLength - 3) .. "..."
-end
-
-function Helper.FormatNumber(num: number): string
-	if num >= 1000000 then
-		return string.format("%.1fM", num / 1000000)
-	elseif num >= 1000 then
-		return string.format("%.1fK", num / 1000)
-	end
-	return tostring(num)
-end
-
-function Helper.QuickSerializeArgument(value): string
-	local t = typeof(value)
-	if t == "string" then
-		local display = value
-		-- Detect GUID pattern
-		if string.match(display, "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$") then
-			return "GUID"
-		end
-		if #display > 50 then
-			display = string.sub(display, 1, 47) .. "..."
-		end
-		-- Escape control characters for display
-		display = string.gsub(display, "[%c]", ".")
-		return `"{display}"`
-	elseif t == "Instance" then
-		local ok, fullName = pcall(function() return value:GetFullName() end)
-		if ok then
-			return fullName
-		end
-		return `[Instance] {tostring(value)}`
-	elseif t == "boolean" then
-		return tostring(value)
-	elseif t == "number" then
-		if value ~= value then
-			return "nan"
-		elseif value == math.huge then
-			return "math.huge"
-		elseif value == -math.huge then
-			return "-math.huge"
-		elseif value == math.floor(value) and math.abs(value) > 1e9 then
-			-- Likely a timestamp
-			return `{value} (timestamp?)`
-		end
-		return tostring(value)
-	elseif t == "nil" then
-		return "nil"
-	elseif t == "EnumItem" then
-		return tostring(value)
-	elseif t == "Vector3" then
-		return `Vector3({string.format("%.2f, %.2f, %.2f", value.X, value.Y, value.Z)})`
-	elseif t == "Vector2" then
-		return `Vector2({string.format("%.2f, %.2f", value.X, value.Y)})`
-	elseif t == "CFrame" then
-		local pos = value.Position
-		return `CFrame({string.format("%.1f, %.1f, %.1f, ...", pos.X, pos.Y, pos.Z)})`
-	elseif t == "UDim2" then
-		return `UDim2({value.X.Scale}, {value.X.Offset}, {value.Y.Scale}, {value.Y.Offset})`
-	elseif t == "UDim" then
-		return `UDim({value.Scale}, {value.Offset})`
-	elseif t == "Color3" then
-		return `Color3({string.format("%.2f, %.2f, %.2f", value.R, value.G, value.B)})`
-	elseif t == "BrickColor" then
-		return `BrickColor("{tostring(value)}")`
-	elseif t == "table" then
-		local len = 0
-		local isArray = true
-		local preview = {}
-		for k, v in pairs(value) do
-			len += 1
-			if len <= 3 then
-				if type(k) ~= "number" or k ~= len then
-					isArray = false
-				end
-				local vStr = Helper.QuickSerializeArgument(v)
-				if #vStr > 20 then
-					vStr = string.sub(vStr, 1, 17) .. "..."
-				end
-				if isArray then
-					table.insert(preview, vStr)
-				else
-					table.insert(preview, `{tostring(k)} = {vStr}`)
-				end
-			end
-			if len > 10 then break end
-		end
-		local suffix = len > 3 and `, ... +{len - 3}` or ""
-		if len == 0 then
-			return "{}"
-		end
-		return `\{{table.concat(preview, ", ")}{suffix}}`
-	elseif t == "function" then
-		local info = debug and debug.info and pcall(debug.info, value, "n")
-		if info then
-			local ok, name = pcall(debug.info, value, "n")
-			if ok and name and name ~= "" then
-				return `function {name}()`
+function ImageFetch.Preload(imageIds: { string })
+	if wax.shared.ContentProvider then
+		local instances = {}
+		for _, id in ipairs(imageIds) do
+			if not Cache[id] then
+				local img = Instance.new("ImageLabel")
+				img.Image = id
+				table.insert(instances, img)
+				Cache[id] = true
 			end
 		end
-		return "function()"
-	elseif t == "buffer" then
-		local size = buffer.len(value)
-		if size <= 8 then
-			local bytes = {}
-			for i = 0, size - 1 do
-				table.insert(bytes, string.format("%02X", buffer.readu8(value, i)))
-			end
-			return `buffer[{table.concat(bytes, " ")}]`
+
+		if #instances > 0 then
+			pcall(function()
+				wax.shared.ContentProvider:PreloadAsync(instances)
+			end)
 		end
-		return `buffer({size} bytes)`
-	elseif t == "thread" then
-		return `thread({tostring(value)})`
-	elseif t == "Ray" then
-		return `Ray({string.format("%.1f, %.1f, %.1f", value.Origin.X, value.Origin.Y, value.Origin.Z)})`
-	elseif t == "NumberRange" then
-		return `NumberRange({value.Min}, {value.Max})`
-	elseif t == "NumberSequence" then
-		return `NumberSequence({#value.Keypoints} keypoints)`
-	elseif t == "ColorSequence" then
-		return `ColorSequence({#value.Keypoints} keypoints)`
-	elseif t == "Rect" then
-		return `Rect({value.Min.X}, {value.Min.Y}, {value.Max.X}, {value.Max.Y})`
-	else
-		return tostring(value)
+
+		for _, img in ipairs(instances) do
+			img:Destroy()
+		end
 	end
 end
 
-function Helper.FormatTimestamp(timestamp: number): string
-	local seconds = math.floor(timestamp) % 60
-	local minutes = math.floor(timestamp / 60) % 60
-	local hours = math.floor(timestamp / 3600) % 24
-	return string.format("%02d:%02d:%02d", hours, minutes, seconds)
-end
-
-return Helper
+return ImageFetch
 
 end)() end,
     [31] = function()local wax,script,require=ImportGlobals(31)local ImportGlobals return (function(...)--[[
@@ -7063,6 +7255,71 @@ local ObjectTree = {
                 },
                 {
                     {
+                        4,
+                        2,
+                        {
+                            "Spy"
+                        },
+                        {
+                            {
+                                7,
+                                1,
+                                {
+                                    "Hooks"
+                                },
+                                {
+                                    {
+                                        8,
+                                        1,
+                                        {
+                                            "Default"
+                                        },
+                                        {
+                                            {
+                                                10,
+                                                2,
+                                                {
+                                                    "Outgoing"
+                                                }
+                                            },
+                                            {
+                                                9,
+                                                2,
+                                                {
+                                                    "Incoming"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            {
+                                11,
+                                2,
+                                {
+                                    "Init"
+                                }
+                            },
+                            {
+                                5,
+                                1,
+                                {
+                                    "Actors"
+                                },
+                                {
+                                    {
+                                        6,
+                                        5,
+                                        {
+                                            "Environment",
+                                            Value = "-- Actor Environment Template for Nova\r\n-- This code runs inside each Actor's Lua VM to intercept remotes there.\r\n-- NOVA_ACTOR_DATA is replaced at runtime with serialized configuration.\r\n\r\nlocal ActorData = NOVA_ACTOR_DATA\r\n\r\nlocal Token = ActorData.Token\r\nlocal IgnorePlayerModule = ActorData.IgnorePlayerModule\r\nlocal IgnoredRemotesDropdown = ActorData.IgnoredRemotesDropdown\r\nlocal UseAlternativeHooks = ActorData.UseAlternativeHooks\r\nlocal ExecutorSupport = ActorData.ExecutorSupport\r\n\r\nlocal ChannelID, RelayChannel = create_comm_channel()\r\n\r\nlocal MethodToClass = {\r\n\tFireServer = { \"RemoteEvent\", \"UnreliableRemoteEvent\" },\r\n\tInvokeServer = { \"RemoteFunction\" },\r\n\tFire = { \"BindableEvent\" },\r\n\tInvoke = { \"BindableFunction\" },\r\n}\r\n\r\nlocal function ShouldIgnore(instance)\r\n\tif IgnoredRemotesDropdown[instance.ClassName] then\r\n\t\treturn true\r\n\tend\r\n\r\n\tif IgnorePlayerModule then\r\n\t\tlocal fullName = instance:GetFullName()\r\n\t\tif string.find(fullName, \"PlayerModule\") or string.find(fullName, \"PlayerScripts\") then\r\n\t\t\treturn true\r\n\t\tend\r\n\tend\r\n\r\n\treturn false\r\nend\r\n\r\n-- Hook __namecall in Actor VM\r\nlocal OldNamecall\r\nOldNamecall = hookmetamethod(game, \"__namecall\", newcclosure(function(...)\r\n\tlocal method = getnamecallmethod()\r\n\tlocal self = (...)\r\n\r\n\tif typeof(self) == \"Instance\" then\r\n\t\tlocal className = self.ClassName\r\n\t\tlocal validClasses = MethodToClass[method]\r\n\r\n\t\tif validClasses and table.find(validClasses, className) then\r\n\t\t\tif not ShouldIgnore(self) and not checkcaller() then\r\n\t\t\t\tlocal args = { select(2, ...) }\r\n\r\n\t\t\t\tRelayChannel:Fire(\"ActorLog\", self, \"Outgoing\", {\r\n\t\t\t\t\tArgs = args,\r\n\t\t\t\t\tMethod = method,\r\n\t\t\t\t\tIsExecutor = false,\r\n\t\t\t\t\tInstance = self,\r\n\t\t\t\t})\r\n\t\t\tend\r\n\t\tend\r\n\tend\r\n\r\n\treturn OldNamecall(...)\r\nend))\r\n\r\n-- Listen for commands from main thread\r\nRelayChannel:Listen(\"Unload\", function()\r\n\thookmetamethod(game, \"__namecall\", OldNamecall)\r\nend)\r\n\r\nRelayChannel:Listen(\"MainBlock\", function(Instance, EventType)\r\n\t-- Handle block sync from main thread\r\nend)\r\n\r\nRelayChannel:Listen(\"MainIgnore\", function(Instance, EventType)\r\n\t-- Handle ignore sync from main thread\r\nend)\r\n\r\nRelayChannel:Listen(\"MainSettingsSync\", function(Setting, Value)\r\n\t-- Handle settings sync from main thread\r\nend)\r\n"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    {
                         12,
                         1,
                         {
@@ -7070,17 +7327,10 @@ local ObjectTree = {
                         },
                         {
                             {
-                                22,
+                                24,
                                 2,
                                 {
-                                    "Hooking"
-                                }
-                            },
-                            {
-                                21,
-                                2,
-                                {
-                                    "FileLog"
+                                    "Pagination"
                                 }
                             },
                             {
@@ -7090,13 +7340,6 @@ local ObjectTree = {
                                     "Anticheats"
                                 },
                                 {
-                                    {
-                                        14,
-                                        2,
-                                        {
-                                            "Main"
-                                        }
-                                    },
                                     {
                                         15,
                                         1,
@@ -7112,93 +7355,21 @@ local ObjectTree = {
                                                 }
                                             }
                                         }
-                                    }
-                                }
-                            },
-                            {
-                                28,
-                                1,
-                                {
-                                    "UI"
-                                },
-                                {
-                                    {
-                                        36,
-                                        2,
-                                        {
-                                            "Sonner"
-                                        }
                                     },
                                     {
-                                        29,
+                                        14,
                                         2,
                                         {
-                                            "Drag"
-                                        }
-                                    },
-                                    {
-                                        32,
-                                        2,
-                                        {
-                                            "Icons"
-                                        }
-                                    },
-                                    {
-                                        35,
-                                        2,
-                                        {
-                                            "Resize"
-                                        }
-                                    },
-                                    {
-                                        34,
-                                        2,
-                                        {
-                                            "Interface"
-                                        }
-                                    },
-                                    {
-                                        30,
-                                        2,
-                                        {
-                                            "Helper"
-                                        }
-                                    },
-                                    {
-                                        33,
-                                        2,
-                                        {
-                                            "ImageFetch"
-                                        }
-                                    },
-                                    {
-                                        31,
-                                        2,
-                                        {
-                                            "Highlighter"
+                                            "Main"
                                         }
                                     }
                                 }
                             },
                             {
-                                25,
+                                20,
                                 2,
                                 {
-                                    "SaveManager"
-                                }
-                            },
-                            {
-                                23,
-                                2,
-                                {
-                                    "Log"
-                                }
-                            },
-                            {
-                                24,
-                                2,
-                                {
-                                    "Pagination"
+                                    "Connect"
                                 }
                             },
                             {
@@ -7225,6 +7396,78 @@ local ObjectTree = {
                                 }
                             },
                             {
+                                28,
+                                1,
+                                {
+                                    "UI"
+                                },
+                                {
+                                    {
+                                        29,
+                                        2,
+                                        {
+                                            "Drag"
+                                        }
+                                    },
+                                    {
+                                        36,
+                                        2,
+                                        {
+                                            "Sonner"
+                                        }
+                                    },
+                                    {
+                                        35,
+                                        2,
+                                        {
+                                            "Resize"
+                                        }
+                                    },
+                                    {
+                                        31,
+                                        2,
+                                        {
+                                            "Highlighter"
+                                        }
+                                    },
+                                    {
+                                        32,
+                                        2,
+                                        {
+                                            "Icons"
+                                        }
+                                    },
+                                    {
+                                        33,
+                                        2,
+                                        {
+                                            "ImageFetch"
+                                        }
+                                    },
+                                    {
+                                        34,
+                                        2,
+                                        {
+                                            "Interface"
+                                        }
+                                    },
+                                    {
+                                        30,
+                                        2,
+                                        {
+                                            "Helper"
+                                        }
+                                    }
+                                }
+                            },
+                            {
+                                25,
+                                2,
+                                {
+                                    "SaveManager"
+                                }
+                            },
+                            {
                                 26,
                                 1,
                                 {
@@ -7241,75 +7484,24 @@ local ObjectTree = {
                                 }
                             },
                             {
-                                20,
+                                23,
                                 2,
                                 {
-                                    "Connect"
-                                }
-                            }
-                        }
-                    },
-                    {
-                        4,
-                        2,
-                        {
-                            "Spy"
-                        },
-                        {
-                            {
-                                11,
-                                2,
-                                {
-                                    "Init"
+                                    "Log"
                                 }
                             },
                             {
-                                5,
-                                1,
+                                21,
+                                2,
                                 {
-                                    "Actors"
-                                },
-                                {
-                                    {
-                                        6,
-                                        5,
-                                        {
-                                            "Environment",
-                                            Value = "-- Actor Environment Template for Nova\r\n-- This code runs inside each Actor's Lua VM to intercept remotes there.\r\n-- NOVA_ACTOR_DATA is replaced at runtime with serialized configuration.\r\n\r\nlocal ActorData = NOVA_ACTOR_DATA\r\n\r\nlocal Token = ActorData.Token\r\nlocal IgnorePlayerModule = ActorData.IgnorePlayerModule\r\nlocal IgnoredRemotesDropdown = ActorData.IgnoredRemotesDropdown\r\nlocal UseAlternativeHooks = ActorData.UseAlternativeHooks\r\nlocal ExecutorSupport = ActorData.ExecutorSupport\r\n\r\nlocal ChannelID, RelayChannel = create_comm_channel()\r\n\r\nlocal MethodToClass = {\r\n\tFireServer = { \"RemoteEvent\", \"UnreliableRemoteEvent\" },\r\n\tInvokeServer = { \"RemoteFunction\" },\r\n\tFire = { \"BindableEvent\" },\r\n\tInvoke = { \"BindableFunction\" },\r\n}\r\n\r\nlocal function ShouldIgnore(instance)\r\n\tif IgnoredRemotesDropdown[instance.ClassName] then\r\n\t\treturn true\r\n\tend\r\n\r\n\tif IgnorePlayerModule then\r\n\t\tlocal fullName = instance:GetFullName()\r\n\t\tif string.find(fullName, \"PlayerModule\") or string.find(fullName, \"PlayerScripts\") then\r\n\t\t\treturn true\r\n\t\tend\r\n\tend\r\n\r\n\treturn false\r\nend\r\n\r\n-- Hook __namecall in Actor VM\r\nlocal OldNamecall\r\nOldNamecall = hookmetamethod(game, \"__namecall\", newcclosure(function(...)\r\n\tlocal method = getnamecallmethod()\r\n\tlocal self = (...)\r\n\r\n\tif typeof(self) == \"Instance\" then\r\n\t\tlocal className = self.ClassName\r\n\t\tlocal validClasses = MethodToClass[method]\r\n\r\n\t\tif validClasses and table.find(validClasses, className) then\r\n\t\t\tif not ShouldIgnore(self) and not checkcaller() then\r\n\t\t\t\tlocal args = { select(2, ...) }\r\n\r\n\t\t\t\tRelayChannel:Fire(\"ActorLog\", self, \"Outgoing\", {\r\n\t\t\t\t\tArgs = args,\r\n\t\t\t\t\tMethod = method,\r\n\t\t\t\t\tIsExecutor = false,\r\n\t\t\t\t\tInstance = self,\r\n\t\t\t\t})\r\n\t\t\tend\r\n\t\tend\r\n\tend\r\n\r\n\treturn OldNamecall(...)\r\nend))\r\n\r\n-- Listen for commands from main thread\r\nRelayChannel:Listen(\"Unload\", function()\r\n\thookmetamethod(game, \"__namecall\", OldNamecall)\r\nend)\r\n\r\nRelayChannel:Listen(\"MainBlock\", function(Instance, EventType)\r\n\t-- Handle block sync from main thread\r\nend)\r\n\r\nRelayChannel:Listen(\"MainIgnore\", function(Instance, EventType)\r\n\t-- Handle ignore sync from main thread\r\nend)\r\n\r\nRelayChannel:Listen(\"MainSettingsSync\", function(Setting, Value)\r\n\t-- Handle settings sync from main thread\r\nend)\r\n"
-                                        }
-                                    }
+                                    "FileLog"
                                 }
                             },
                             {
-                                7,
-                                1,
+                                22,
+                                2,
                                 {
-                                    "Hooks"
-                                },
-                                {
-                                    {
-                                        8,
-                                        1,
-                                        {
-                                            "Default"
-                                        },
-                                        {
-                                            {
-                                                9,
-                                                2,
-                                                {
-                                                    "Incoming"
-                                                }
-                                            },
-                                            {
-                                                10,
-                                                2,
-                                                {
-                                                    "Outgoing"
-                                                }
-                                            }
-                                        }
-                                    }
+                                    "Hooking"
                                 }
                             }
                         }
@@ -7336,32 +7528,32 @@ local ObjectTree = {
 
 -- Line offsets for debugging (only included when minifyTables is false)
 local LineOffsets = {
-    [2] = 817,
-    [3] = 5000,
-    [4] = 657,
+    [2] = 854,
+    [3] = 5388,
+    [4] = 694,
     [10] = 20,
-    [9] = 5694,
-    [21] = 324,
-    [20] = 459,
-    [36] = 480,
-    [32] = 761,
-    [35] = 994,
-    [33] = 1089,
-    [22] = 1137,
-    [29] = 4827,
-    [24] = 4882,
-    [16] = 6997,
-    [11] = 5181,
-    [18] = 5285,
-    [14] = 6950,
-    [31] = 6805,
-    [37] = 1279,
-    [23] = 6351,
-    [25] = 6562,
-    [19] = 6144,
-    [34] = 209,
-    [30] = 6598,
-    [27] = 5846
+    [9] = 209,
+    [21] = 361,
+    [20] = 496,
+    [36] = 517,
+    [32] = 798,
+    [35] = 1031,
+    [19] = 1126,
+    [22] = 1333,
+    [29] = 5215,
+    [24] = 5270,
+    [16] = 7189,
+    [11] = 5569,
+    [18] = 5673,
+    [14] = 7142,
+    [31] = 6997,
+    [33] = 6949,
+    [23] = 6702,
+    [25] = 6913,
+    [34] = 6587,
+    [37] = 1475,
+    [30] = 6082,
+    [27] = 6289
 }
 
 -- Misc AOT variable imports

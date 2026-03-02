@@ -1838,6 +1838,25 @@ CreateInfoDropdownButton("code", "Code", {
 			end
 		end,
 	},
+	{
+		Text = "Copy Args Table",
+		Icon = "list",
+		Condition = function()
+			return CurrentDetailCallInfo and CurrentDetailCallInfo.Args and #CurrentDetailCallInfo.Args > 0
+		end,
+		Callback = function()
+			if not (CurrentDetailCallInfo and CurrentDetailCallInfo.Args) then return end
+			local argEntries = {}
+			for _, arg in ipairs(CurrentDetailCallInfo.Args) do
+				table.insert(argEntries, "\t" .. CodeGen.SmartSerializeValue(arg))
+			end
+			local argsStr = "{\n" .. table.concat(argEntries, ",\n") .. "\n}"
+			local success = pcall(setclipboard, argsStr)
+			if success then
+				wax.shared.Sonner.success("Copied args table")
+			end
+		end,
+	},
 })
 
 -- ===== ORIGIN dropdown =====
@@ -1934,6 +1953,50 @@ CreateInfoDropdownButton("git-branch", "Event", {
 		end,
 	},
 	{
+		Text = "Replay x5",
+		Icon = "play",
+		Condition = function()
+			return CurrentDetailLogEntry and CurrentDetailLogEntry.Type == "Outgoing" and CurrentDetailCallInfo
+		end,
+		Callback = function()
+			if not (CurrentDetailLogEntry and CurrentDetailCallInfo) then
+				return
+			end
+			wax.shared.Sonner.promise(function()
+				for i = 1, 5 do
+					wax.shared.ReplayCallInfo(CurrentDetailCallInfo, CurrentDetailLogEntry.Type)
+					if i < 5 then task.wait(0.1) end
+				end
+			end, {
+				loadingText = "Replaying x5...",
+				successText = "Replayed x5!",
+				errorText = "Failed to replay",
+			})
+		end,
+	},
+	{
+		Text = "Replay x10",
+		Icon = "play",
+		Condition = function()
+			return CurrentDetailLogEntry and CurrentDetailLogEntry.Type == "Outgoing" and CurrentDetailCallInfo
+		end,
+		Callback = function()
+			if not (CurrentDetailLogEntry and CurrentDetailCallInfo) then
+				return
+			end
+			wax.shared.Sonner.promise(function()
+				for i = 1, 10 do
+					wax.shared.ReplayCallInfo(CurrentDetailCallInfo, CurrentDetailLogEntry.Type)
+					if i < 10 then task.wait(0.05) end
+				end
+			end, {
+				loadingText = "Replaying x10...",
+				successText = "Replayed x10!",
+				errorText = "Failed to replay",
+			})
+		end,
+	},
+	{
 		Text = function()
 			if CurrentDetailLogEntry and CurrentDetailLogEntry.Ignored then
 				return "Unignore"
@@ -1975,6 +2038,65 @@ CreateInfoDropdownButton("git-branch", "Event", {
 			if not CurrentDetailLogEntry then return end
 			CurrentDetailLogEntry:Block()
 			wax.shared.Sonner.success(`{CurrentDetailLogEntry.Blocked and "Blocking" or "Unblocked"} {CurrentDetailLogEntry.Instance.Name}`)
+		end,
+	},
+	{
+		Text = "Block by Name",
+		Icon = "lock",
+		Condition = function()
+			return CurrentDetailLogEntry ~= nil
+		end,
+		Callback = function()
+			if not CurrentDetailLogEntry then return end
+			local name = CurrentDetailLogEntry.Instance.Name
+			local count = 0
+			for _, logType in pairs({"Outgoing", "Incoming"}) do
+				for _, log in pairs(wax.shared.Logs[logType]) do
+					if log.Instance and log.Instance.Name == name and not log.Blocked then
+						log:Block()
+						count += 1
+					end
+				end
+			end
+			wax.shared.Sonner.success(`Blocked {count} remotes named "{name}"`)
+		end,
+	},
+	{
+		Text = "Ignore by Name",
+		Icon = "eye-off",
+		Condition = function()
+			return CurrentDetailLogEntry ~= nil
+		end,
+		Callback = function()
+			if not CurrentDetailLogEntry then return end
+			local name = CurrentDetailLogEntry.Instance.Name
+			local count = 0
+			for _, logType in pairs({"Outgoing", "Incoming"}) do
+				for _, log in pairs(wax.shared.Logs[logType]) do
+					if log.Instance and log.Instance.Name == name and not log.Ignored then
+						log:Ignore()
+						count += 1
+					end
+				end
+			end
+			wax.shared.Sonner.success(`Ignored {count} remotes named "{name}"`)
+		end,
+	},
+	{
+		Text = "Clear Logs",
+		Icon = "trash-2",
+		Condition = function()
+			return CurrentDetailLogEntry ~= nil
+		end,
+		Callback = function()
+			if not CurrentDetailLogEntry then return end
+			CurrentDetailLogEntry.Calls = {}
+			CurrentDetailLogEntry.GameCalls = {}
+			CurrentDetailLogEntry.TotalCallCount = 0
+			if CurrentLog == CurrentDetailLogEntry then
+				ShowLog(CurrentDetailLogEntry)
+			end
+			wax.shared.Sonner.success(`Cleared logs for {CurrentDetailLogEntry.Instance.Name}`)
 		end,
 	},
 })
@@ -2146,9 +2268,15 @@ function ShowCallDetails(logEntry, callInfo, callIndex)
 
 	if callInfo.Args and #callInfo.Args > 0 then
 		for i, arg in ipairs(callInfo.Args) do
-			local argRow = Interface.New("Frame", {
+			local argColor = SyntaxHighlighter.GetArgumentColor(arg)
+			local valueStr = Helper.QuickSerializeArgument(arg)
+
+			-- Clickable arg row (copies value on click)
+			local argRow = Interface.New("TextButton", {
+				Text = "",
 				BackgroundColor3 = Theme.Surface,
-				Size = UDim2.new(1, 0, 0, 24),
+				Size = UDim2.new(1, 0, 0, 26),
+				AutoButtonColor = false,
 				ZIndex = 52,
 				Parent = argsPage,
 				["UICorner"] = { CornerRadius = UDim.new(0, 4) },
@@ -2157,6 +2285,17 @@ function ShowCallDetails(logEntry, callInfo, callIndex)
 					PaddingRight = UDim.new(0, 8),
 				},
 			})
+
+			Helper.HoverEffect(argRow, Theme.SurfaceHover, Theme.Surface)
+
+			-- Click to copy this argument
+			local argSerializedForCopy = CodeGen.SmartSerializeValue(arg)
+			argRow.MouseButton1Click:Connect(function()
+				local success = pcall(setclipboard, argSerializedForCopy)
+				if success then
+					wax.shared.Sonner.success(`Copied arg #{i}`)
+				end
+			end)
 
 			-- Arg index
 			Interface.New("TextLabel", {
@@ -2172,11 +2311,9 @@ function ShowCallDetails(logEntry, callInfo, callIndex)
 			})
 
 			-- Value
-			local argColor = SyntaxHighlighter.GetArgumentColor(arg)
-			local valueStr = Helper.QuickSerializeArgument(arg)
 			Interface.New("TextLabel", {
 				BackgroundTransparency = 1,
-				Size = UDim2.new(1, -80, 1, 0),
+				Size = UDim2.new(1, -100, 1, 0),
 				Position = UDim2.new(0, 24, 0, 0),
 				Text = valueStr,
 				TextColor3 = argColor,
@@ -2188,20 +2325,103 @@ function ShowCallDetails(logEntry, callInfo, callIndex)
 				Parent = argRow,
 			})
 
-			-- Type
-			Interface.New("TextLabel", {
-				BackgroundTransparency = 1,
-				Size = UDim2.new(0, 50, 1, 0),
-				Position = UDim2.new(1, -50, 0, 0),
-				Text = typeof(arg),
-				TextColor3 = Theme.TextMuted,
-				TextSize = 10,
-				Font = Enum.Font.GothamMedium,
-				TextXAlignment = Enum.TextXAlignment.Right,
+			-- Type badge
+			local typeBadge = Interface.New("Frame", {
+				BackgroundColor3 = argColor,
+				BackgroundTransparency = 0.85,
+				Size = UDim2.new(0, 0, 0, 16),
+				AutomaticSize = Enum.AutomaticSize.X,
+				Position = UDim2.new(1, 0, 0.5, 0),
+				AnchorPoint = Vector2.new(1, 0.5),
 				ZIndex = 53,
 				Parent = argRow,
+				["UICorner"] = { CornerRadius = UDim.new(0, 3) },
+				["UIPadding"] = {
+					PaddingLeft = UDim.new(0, 4),
+					PaddingRight = UDim.new(0, 4),
+				},
 			})
+
+			Interface.New("TextLabel", {
+				BackgroundTransparency = 1,
+				Size = UDim2.new(0, 0, 1, 0),
+				AutomaticSize = Enum.AutomaticSize.X,
+				Text = typeof(arg),
+				TextColor3 = argColor,
+				TextSize = 9,
+				Font = Enum.Font.GothamBold,
+				TextXAlignment = Enum.TextXAlignment.Center,
+				ZIndex = 54,
+				Parent = typeBadge,
+			})
+
+			-- Copy icon hint
+			local copyHint = Interface.New("ImageLabel", {
+				BackgroundTransparency = 1,
+				Size = UDim2.fromOffset(10, 10),
+				Position = UDim2.new(0, 14, 0.5, 0),
+				AnchorPoint = Vector2.new(0, 0.5),
+				ImageColor3 = Theme.TextMuted,
+				ImageTransparency = 1,
+				ZIndex = 54,
+				Parent = argRow,
+			})
+			Icons.ApplyIcon(copyHint, "copy")
+
+			argRow.MouseEnter:Connect(function()
+				wax.shared.TweenService:Create(copyHint, TweenInfo.new(0.15), { ImageTransparency = 0.3 }):Play()
+			end)
+			argRow.MouseLeave:Connect(function()
+				wax.shared.TweenService:Create(copyHint, TweenInfo.new(0.15), { ImageTransparency = 1 }):Play()
+			end)
 		end
+
+		-- Copy All Args button
+		local copyAllArgsBtn = Interface.New("TextButton", {
+			Text = "",
+			BackgroundColor3 = Theme.Accent,
+			BackgroundTransparency = 0.85,
+			Size = UDim2.new(1, 0, 0, 28),
+			AutoButtonColor = false,
+			ZIndex = 52,
+			Parent = argsPage,
+			["UICorner"] = { CornerRadius = UDim.new(0, 5) },
+		})
+
+		local copyAllIcon = Interface.New("ImageLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.fromOffset(12, 12),
+			Position = UDim2.new(0.5, -56, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			ImageColor3 = Theme.Accent,
+			ZIndex = 53,
+			Parent = copyAllArgsBtn,
+		})
+		Icons.ApplyIcon(copyAllIcon, "copy")
+
+		Interface.New("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(0, 100, 1, 0),
+			Position = UDim2.new(0.5, -40, 0, 0),
+			Text = "Copy All Args",
+			TextColor3 = Theme.Accent,
+			TextSize = 11,
+			Font = Enum.Font.GothamBold,
+			ZIndex = 53,
+			Parent = copyAllArgsBtn,
+		})
+
+		copyAllArgsBtn.MouseButton1Click:Connect(function()
+			local argEntries = {}
+			for _, arg in ipairs(callInfo.Args) do
+				table.insert(argEntries, CodeGen.SmartSerializeValue(arg))
+			end
+			local argsStr = "{\n" .. table.concat(argEntries, ",\n") .. "\n}"
+			local success = pcall(setclipboard, argsStr)
+			if success then
+				wax.shared.Sonner.success("Copied all arguments")
+			end
+		end)
 	else
 		Interface.New("TextLabel", {
 			BackgroundTransparency = 1,
@@ -2218,199 +2438,171 @@ function ShowCallDetails(logEntry, callInfo, callIndex)
 	-- ========== CODE TAB ==========
 	local codePage = InfoTabPages["Code"]
 
-	-- Calling Code - syntax highlighted
-	Interface.New("TextLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1, 0, 0, 18),
-		Text = "Calling Code",
-		TextColor3 = Theme.Text,
-		TextSize = 12,
-		Font = Enum.Font.GothamBold,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		ZIndex = 52,
-		Parent = codePage,
-	})
+	-- Helper: Create a code block with header, line numbers, copy button
+	local function CreateCodeBlock(parent, title, code, accentColor)
+		accentColor = accentColor or Theme.Accent
+
+		-- Header with title and copy button
+		local header = Interface.New("Frame", {
+			BackgroundColor3 = Color3.fromRGB(18, 18, 18),
+			Size = UDim2.new(1, 0, 0, 28),
+			ZIndex = 52,
+			Parent = parent,
+			["UICorner"] = { CornerRadius = UDim.new(0, 6) },
+		})
+
+		-- Accent bar on left
+		Interface.New("Frame", {
+			BackgroundColor3 = accentColor,
+			Size = UDim2.new(0, 3, 1, -8),
+			Position = UDim2.new(0, 4, 0, 4),
+			ZIndex = 53,
+			Parent = header,
+			["UICorner"] = { CornerRadius = UDim.new(0, 2) },
+		})
+
+		Interface.New("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, -80, 1, 0),
+			Position = UDim2.new(0, 14, 0, 0),
+			Text = title,
+			TextColor3 = Theme.Text,
+			TextSize = 11,
+			Font = Enum.Font.GothamBold,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			ZIndex = 53,
+			Parent = header,
+		})
+
+		-- Copy button in header
+		local copyBtn = Interface.New("TextButton", {
+			Text = "",
+			BackgroundColor3 = accentColor,
+			BackgroundTransparency = 0.85,
+			Size = UDim2.fromOffset(60, 20),
+			Position = UDim2.new(1, -64, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			AutoButtonColor = false,
+			ZIndex = 53,
+			Parent = header,
+			["UICorner"] = { CornerRadius = UDim.new(0, 4) },
+		})
+
+		local copyIcoInHeader = Interface.New("ImageLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.fromOffset(10, 10),
+			Position = UDim2.new(0, 6, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			ImageColor3 = accentColor,
+			ZIndex = 54,
+			Parent = copyBtn,
+		})
+		Icons.ApplyIcon(copyIcoInHeader, "copy")
+
+		Interface.New("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, -20, 1, 0),
+			Position = UDim2.new(0, 18, 0, 0),
+			Text = "Copy",
+			TextColor3 = accentColor,
+			TextSize = 10,
+			Font = Enum.Font.GothamBold,
+			ZIndex = 54,
+			Parent = copyBtn,
+		})
+
+		copyBtn.MouseButton1Click:Connect(function()
+			local success = pcall(setclipboard, code)
+			if success then
+				wax.shared.Sonner.success(`Copied {string.lower(title)}`)
+			end
+		end)
+
+		-- Code body with line numbers
+		local codeBody = Interface.New("Frame", {
+			BackgroundColor3 = Color3.fromRGB(8, 8, 8),
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			ZIndex = 52,
+			Parent = parent,
+			["UICorner"] = { CornerRadius = UDim.new(0, 6) },
+			["UIStroke"] = {
+				Color = Color3.fromRGB(30, 30, 30),
+				Thickness = 1,
+			},
+		})
+
+		-- Line numbers column
+		local codeLines = string.split(code, "\n")
+		local lineNums = {}
+		for lineIdx = 1, #codeLines do
+			table.insert(lineNums, tostring(lineIdx))
+		end
+
+		local lineNumFrame = Interface.New("Frame", {
+			BackgroundColor3 = Color3.fromRGB(15, 15, 15),
+			Size = UDim2.new(0, 28, 1, 0),
+			ZIndex = 52,
+			Parent = codeBody,
+			["UICorner"] = { CornerRadius = UDim.new(0, 6) },
+		})
+
+		Interface.New("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			Position = UDim2.new(0, 0, 0, 8),
+			Text = table.concat(lineNums, "\n"),
+			TextColor3 = Theme.TextMuted,
+			TextTransparency = 0.5,
+			TextSize = 12,
+			Font = Enum.Font.Code,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			ZIndex = 53,
+			Parent = lineNumFrame,
+		})
+
+		-- Code content
+		local highlighted = SyntaxHighlighter.Highlight(code)
+		Interface.New("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, -36, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			Position = UDim2.new(0, 34, 0, 8),
+			Text = highlighted,
+			TextColor3 = SyntaxHighlighter.Colors.Default,
+			TextSize = 12,
+			Font = Enum.Font.Code,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			TextWrapped = true,
+			RichText = true,
+			ZIndex = 53,
+			Parent = codeBody,
+		})
+
+		-- Bottom padding
+		Interface.New("Frame", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, 0, 0, 8),
+			Parent = codeBody,
+		})
+	end
 
 	local callingCode = CodeGen.GenerateCode(logEntry, callInfo)
-	local highlightedCalling = SyntaxHighlighter.Highlight(callingCode)
+	CreateCodeBlock(codePage, "Calling Code", callingCode, Theme.Accent)
 
-	local callingCodeFrame = Interface.New("Frame", {
-		BackgroundColor3 = Color3.fromRGB(0, 0, 0),
-		Size = UDim2.new(1, 0, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		ZIndex = 52,
-		Parent = codePage,
-		["UICorner"] = { CornerRadius = UDim.new(0, 6) },
-		["UIStroke"] = {
-			Color = Color3.fromRGB(25, 25, 25),
-			Thickness = 1,
-		},
-		["UIPadding"] = {
-			PaddingLeft = UDim.new(0, 8),
-			PaddingRight = UDim.new(0, 8),
-			PaddingTop = UDim.new(0, 8),
-			PaddingBottom = UDim.new(0, 8),
-		},
-	})
-
-	Interface.New("TextLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1, 0, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		Text = highlightedCalling,
-		TextColor3 = SyntaxHighlighter.Colors.Default,
-		TextSize = 12,
-		Font = Enum.Font.Code,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextYAlignment = Enum.TextYAlignment.Top,
-		TextWrapped = true,
-		RichText = true,
-		ZIndex = 53,
-		Parent = callingCodeFrame,
-	})
-
-	-- Copy Calling Code button
-	local copyCallingBtn = Interface.New("TextButton", {
-		Text = "",
-		BackgroundColor3 = Color3.fromRGB(25, 25, 25),
-		Size = UDim2.new(1, 0, 0, 28),
-		AutoButtonColor = false,
-		ZIndex = 52,
-		Parent = codePage,
-		["UICorner"] = { CornerRadius = UDim.new(0, 5) },
-	})
-
-	local copyIco = Interface.New("ImageLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(12, 12),
-		Position = UDim2.new(0.5, -46, 0.5, 0),
-		AnchorPoint = Vector2.new(0, 0.5),
-		ImageColor3 = Theme.TextMuted,
-		ZIndex = 53,
-		Parent = copyCallingBtn,
-	})
-	Icons.ApplyIcon(copyIco, "copy")
-
-	Interface.New("TextLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.new(0, 80, 1, 0),
-		Position = UDim2.new(0.5, -30, 0, 0),
-		Text = "Copy Code",
-		TextColor3 = Theme.Text,
-		TextSize = 11,
-		Font = Enum.Font.GothamMedium,
-		ZIndex = 53,
-		Parent = copyCallingBtn,
-	})
-
-	Helper.HoverEffect(copyCallingBtn, Color3.fromRGB(35, 35, 35), Color3.fromRGB(25, 25, 25))
-	copyCallingBtn.MouseButton1Click:Connect(function()
-		local success = pcall(setclipboard, callingCode)
-		if success then
-			wax.shared.Sonner.success("Copied calling code")
-		end
-	end)
-
-	-- Separator
+	-- Spacer
 	Interface.New("Frame", {
-		BackgroundColor3 = Theme.Border,
-		Size = UDim2.new(1, 0, 0, 1),
-		ZIndex = 52,
-		Parent = codePage,
-	})
-
-	-- Intercept Code - syntax highlighted
-	Interface.New("TextLabel", {
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, 0, 0, 18),
-		Text = "Intercept Code",
-		TextColor3 = Theme.Text,
-		TextSize = 12,
-		Font = Enum.Font.GothamBold,
-		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, 0, 0, 4),
 		ZIndex = 52,
 		Parent = codePage,
 	})
 
 	local interceptCode = CodeGen.GenerateInterceptCode(logEntry)
-	local highlightedIntercept = SyntaxHighlighter.Highlight(interceptCode)
-
-	local interceptCodeFrame = Interface.New("Frame", {
-		BackgroundColor3 = Color3.fromRGB(0, 0, 0),
-		Size = UDim2.new(1, 0, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		ZIndex = 52,
-		Parent = codePage,
-		["UICorner"] = { CornerRadius = UDim.new(0, 6) },
-		["UIStroke"] = {
-			Color = Color3.fromRGB(25, 25, 25),
-			Thickness = 1,
-		},
-		["UIPadding"] = {
-			PaddingLeft = UDim.new(0, 8),
-			PaddingRight = UDim.new(0, 8),
-			PaddingTop = UDim.new(0, 8),
-			PaddingBottom = UDim.new(0, 8),
-		},
-	})
-
-	Interface.New("TextLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1, 0, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		Text = highlightedIntercept,
-		TextColor3 = SyntaxHighlighter.Colors.Default,
-		TextSize = 12,
-		Font = Enum.Font.Code,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextYAlignment = Enum.TextYAlignment.Top,
-		TextWrapped = true,
-		RichText = true,
-		ZIndex = 53,
-		Parent = interceptCodeFrame,
-	})
-
-	-- Copy Intercept button
-	local copyInterceptBtn = Interface.New("TextButton", {
-		Text = "",
-		BackgroundColor3 = Color3.fromRGB(25, 25, 25),
-		Size = UDim2.new(1, 0, 0, 28),
-		AutoButtonColor = false,
-		ZIndex = 52,
-		Parent = codePage,
-		["UICorner"] = { CornerRadius = UDim.new(0, 5) },
-	})
-
-	local copyIco2 = Interface.New("ImageLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(12, 12),
-		Position = UDim2.new(0.5, -62, 0.5, 0),
-		AnchorPoint = Vector2.new(0, 0.5),
-		ImageColor3 = Theme.TextMuted,
-		ZIndex = 53,
-		Parent = copyInterceptBtn,
-	})
-	Icons.ApplyIcon(copyIco2, "shield-alert")
-
-	Interface.New("TextLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.new(0, 110, 1, 0),
-		Position = UDim2.new(0.5, -46, 0, 0),
-		Text = "Copy Intercept",
-		TextColor3 = Theme.Text,
-		TextSize = 11,
-		Font = Enum.Font.GothamMedium,
-		ZIndex = 53,
-		Parent = copyInterceptBtn,
-	})
-
-	Helper.HoverEffect(copyInterceptBtn, Color3.fromRGB(35, 35, 35), Color3.fromRGB(25, 25, 25))
-	copyInterceptBtn.MouseButton1Click:Connect(function()
-		local success = pcall(setclipboard, interceptCode)
-		if success then
-			wax.shared.Sonner.success("Copied intercept code")
-		end
-	end)
+	CreateCodeBlock(codePage, "Intercept Code", interceptCode, Theme.Warning)
 
 	-- ========== DECOMPILE TAB ==========
 	local decompilePage = InfoTabPages["Decompile"]
