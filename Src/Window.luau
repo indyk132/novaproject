@@ -54,13 +54,13 @@ local Theme = {
 	Outgoing = Color3.fromRGB(247, 129, 102),
 }
 
--- Remote type images
-local Images = {
-	RemoteEvent = ImageFetcher.GetRemoteImage("RemoteEvent"),
-	RemoteFunction = ImageFetcher.GetRemoteImage("RemoteFunction"),
-	UnreliableRemoteEvent = ImageFetcher.GetRemoteImage("UnreliableRemoteEvent"),
-	BindableEvent = ImageFetcher.GetRemoteImage("BindableEvent"),
-	BindableFunction = ImageFetcher.GetRemoteImage("BindableFunction"),
+-- Remote type icon names (Lucide)
+local RemoteIconNames = {
+	RemoteEvent = "zap",
+	RemoteFunction = "arrow-right-left",
+	UnreliableRemoteEvent = "zap-off",
+	BindableEvent = "plug",
+	BindableFunction = "cable",
 }
 
 -- Default tween info
@@ -136,7 +136,7 @@ local TitleIcon = Interface.New("ImageLabel", {
 	ImageColor3 = Theme.Accent,
 	Parent = TitleBar,
 })
-Icons.ApplyIcon(TitleIcon, "scan")
+Icons.ApplyIcon(TitleIcon, "radar")
 
 Interface.New("TextLabel", {
 	BackgroundTransparency = 1,
@@ -334,9 +334,9 @@ local function CreateTabButton(name, iconName)
 	return btn
 end
 
-local OutgoingTabBtn = CreateTabButton("Outgoing", "send")
-local IncomingTabBtn = CreateTabButton("Incoming", "inbox")
-local SettingsTabBtn = CreateTabButton("Settings", "sliders-horizontal")
+local OutgoingTabBtn = CreateTabButton("Outgoing", "arrow-up-right")
+local IncomingTabBtn = CreateTabButton("Incoming", "arrow-down-left")
+local SettingsTabBtn = CreateTabButton("Settings", "settings")
 
 -- ============================================================
 -- REMOTE LOGS PANEL
@@ -470,9 +470,10 @@ local function CreateRemoteEntry(logEntry)
 		Size = UDim2.fromOffset(16, 16),
 		Position = UDim2.new(0, 12, 0.5, 0),
 		AnchorPoint = Vector2.new(0, 0.5),
-		Image = Images[className] or Images.RemoteEvent,
+		ImageColor3 = typeColor,
 		Parent = entry,
 	})
+	Icons.ApplyIcon(icon, RemoteIconNames[className] or "zap")
 
 	-- Remote name
 	local nameLabel = Interface.New("TextLabel", {
@@ -594,7 +595,7 @@ local searchIcon = Interface.New("ImageLabel", {
 	ZIndex = 62,
 	Parent = SearchFrame,
 })
-Icons.ApplyIcon(searchIcon, "scan-search")
+Icons.ApplyIcon(searchIcon, "search")
 
 -- Separator
 Interface.New("Frame", {
@@ -722,15 +723,16 @@ local function RefreshSearch()
 				["UICorner"] = { CornerRadius = UDim.new(0, 6) },
 			})
 
-			local rIcon = Interface.New("ImageLabel", {
+				local rIcon = Interface.New("ImageLabel", {
 				BackgroundTransparency = 1,
 				Size = UDim2.fromOffset(16, 16),
 				Position = UDim2.new(0, 8, 0.5, 0),
 				AnchorPoint = Vector2.new(0, 0.5),
-				Image = Images[className] or Images.RemoteEvent,
+				ImageColor3 = Theme.Accent,
 				ZIndex = 64,
 				Parent = resultBtn,
 			})
+			Icons.ApplyIcon(rIcon, RemoteIconNames[className] or "zap")
 
 			Interface.New("TextLabel", {
 				BackgroundTransparency = 1,
@@ -1232,7 +1234,7 @@ local function CreateCallEntry(logEntry, callInfo, i, parent)
 	})
 
 	-- Origin icon
-	local originIconName = callInfo.IsExecutor and "square-terminal" or "gamepad-2"
+	local originIconName = callInfo.IsExecutor and "terminal" or "gamepad-2"
 	local originIcon = Interface.New("ImageLabel", {
 		BackgroundTransparency = 1,
 		Size = UDim2.fromOffset(12, 12),
@@ -1502,10 +1504,10 @@ local function CreateInfoTab(name, iconName)
 	return btn
 end
 
-CreateInfoTab("Arguments", "braces")
-CreateInfoTab("Code", "terminal")
-CreateInfoTab("Decompile", "file-scan")
-CreateInfoTab("Function Info", "circle-dot")
+CreateInfoTab("Arguments", "list")
+CreateInfoTab("Code", "code")
+CreateInfoTab("Decompile", "file-code")
+CreateInfoTab("Function Info", "info")
 
 -- Tab content area
 local InfoContentArea = Interface.New("Frame", {
@@ -1807,10 +1809,10 @@ local function CreateInfoDropdownButton(iconName, title, options)
 end
 
 -- ===== CODE dropdown =====
-CreateInfoDropdownButton("square-terminal", "Code", {
+CreateInfoDropdownButton("code", "Code", {
 	{
 		Text = "Calling Code",
-		Icon = "code-2",
+		Icon = "forward",
 		Callback = function()
 			if not (CurrentDetailLogEntry and CurrentDetailCallInfo) then
 				wax.shared.Sonner.info("No call details available")
@@ -1825,7 +1827,7 @@ CreateInfoDropdownButton("square-terminal", "Code", {
 	},
 	{
 		Text = "Intercept Code",
-		Icon = "shield-check",
+		Icon = "shield-alert",
 		Callback = function()
 			if not CurrentDetailLogEntry then
 				wax.shared.Sonner.info("No call details available")
@@ -1840,7 +1842,7 @@ CreateInfoDropdownButton("square-terminal", "Code", {
 	},
 	{
 		Text = "Copy Args Table",
-		Icon = "clipboard-list",
+		Icon = "list",
 		Condition = function()
 			return CurrentDetailCallInfo and CurrentDetailCallInfo.Args and #CurrentDetailCallInfo.Args > 0
 		end,
@@ -1860,10 +1862,10 @@ CreateInfoDropdownButton("square-terminal", "Code", {
 })
 
 -- ===== ORIGIN dropdown =====
-CreateInfoDropdownButton("crosshair", "Origin", {
+CreateInfoDropdownButton("file-text", "Origin", {
 	{
 		Text = "Remote Path",
-		Icon = "route",
+		Icon = "package-search",
 		Callback = function()
 			if not CurrentDetailLogEntry then
 				wax.shared.Sonner.info("No call details available")
@@ -1878,7 +1880,7 @@ CreateInfoDropdownButton("crosshair", "Origin", {
 	},
 	{
 		Text = "Script Path",
-		Icon = "file-symlink",
+		Icon = "file-search",
 		Condition = function()
 			return CurrentDetailCallInfo and CurrentDetailCallInfo.Origin and typeof(CurrentDetailCallInfo.Origin) == "Instance"
 		end,
@@ -1894,7 +1896,7 @@ CreateInfoDropdownButton("crosshair", "Origin", {
 	},
 	{
 		Text = "Decompile Script",
-		Icon = "binary",
+		Icon = "file-code",
 		Condition = function()
 			return CurrentDetailCallInfo
 				and CurrentDetailCallInfo.Origin
@@ -1917,10 +1919,10 @@ CreateInfoDropdownButton("crosshair", "Origin", {
 })
 
 -- ===== EVENT dropdown =====
-CreateInfoDropdownButton("zap", "Event", {
+CreateInfoDropdownButton("git-branch", "Event", {
 	{
 		Text = "Copy Event Path",
-		Icon = "link",
+		Icon = "copy",
 		Callback = function()
 			if not CurrentDetailLogEntry then
 				wax.shared.Sonner.info("No call details available")
@@ -1935,7 +1937,7 @@ CreateInfoDropdownButton("zap", "Event", {
 	},
 	{
 		Text = "Replay",
-		Icon = "rotate-ccw",
+		Icon = "play",
 		Condition = function()
 			return CurrentDetailLogEntry and CurrentDetailLogEntry.Type == "Outgoing" and CurrentDetailCallInfo
 		end,
@@ -1954,7 +1956,7 @@ CreateInfoDropdownButton("zap", "Event", {
 	},
 	{
 		Text = "Replay x5",
-		Icon = "fast-forward",
+		Icon = "play",
 		Condition = function()
 			return CurrentDetailLogEntry and CurrentDetailLogEntry.Type == "Outgoing" and CurrentDetailCallInfo
 		end,
@@ -1976,7 +1978,7 @@ CreateInfoDropdownButton("zap", "Event", {
 	},
 	{
 		Text = "Replay x10",
-		Icon = "chevrons-right",
+		Icon = "play",
 		Condition = function()
 			return CurrentDetailLogEntry and CurrentDetailLogEntry.Type == "Outgoing" and CurrentDetailCallInfo
 		end,
@@ -2042,7 +2044,7 @@ CreateInfoDropdownButton("zap", "Event", {
 	},
 	{
 		Text = "Block by Name",
-		Icon = "ban",
+		Icon = "lock",
 		Condition = function()
 			return CurrentDetailLogEntry ~= nil
 		end,
@@ -2063,7 +2065,7 @@ CreateInfoDropdownButton("zap", "Event", {
 	},
 	{
 		Text = "Ignore by Name",
-		Icon = "filter",
+		Icon = "eye-off",
 		Condition = function()
 			return CurrentDetailLogEntry ~= nil
 		end,
@@ -2084,7 +2086,7 @@ CreateInfoDropdownButton("zap", "Event", {
 	},
 	{
 		Text = "Clear Logs",
-		Icon = "eraser",
+		Icon = "trash-2",
 		Condition = function()
 			return CurrentDetailLogEntry ~= nil
 		end,
@@ -2180,7 +2182,7 @@ local function CreateContextMenuItem(text, iconName, callback)
 	end)
 end
 
-CreateContextMenuItem("Event", "zap", function(logEntry)
+CreateContextMenuItem("Event", "git-branch", function(logEntry)
 	local path = CodeGen.GetFullPath(logEntry.Instance, { VariableName = "Remote" })
 	local success = pcall(setclipboard, path)
 	if success then
@@ -2188,7 +2190,7 @@ CreateContextMenuItem("Event", "zap", function(logEntry)
 	end
 end)
 
-CreateContextMenuItem("Replay", "rotate-ccw", function(logEntry)
+CreateContextMenuItem("Replay", "play", function(logEntry)
 	if logEntry.Type == "Outgoing" then
 		local latestCall = logEntry:GetLatestCall()
 		if latestCall then
@@ -2210,12 +2212,12 @@ CreateContextMenuItem("Ignore", "eye-off", function(logEntry)
 	wax.shared.Sonner.success(`{logEntry.Ignored and "Ignoring" or "Unignored"} {logEntry.Instance.Name}`)
 end)
 
-CreateContextMenuItem("Block", "shield-off", function(logEntry)
+CreateContextMenuItem("Block", "lock", function(logEntry)
 	logEntry:Block()
 	wax.shared.Sonner.success(`{logEntry.Blocked and "Blocking" or "Unblocked"} {logEntry.Instance.Name}`)
 end)
 
-CreateContextMenuItem("Clear Logs", "eraser", function(logEntry)
+CreateContextMenuItem("Clear Logs", "trash-2", function(logEntry)
 	logEntry.Calls = {}
 	logEntry.GameCalls = {}
 	if logEntry.Button then
@@ -2629,7 +2631,7 @@ function ShowCallDetails(logEntry, callInfo, callIndex)
 			ZIndex = 53,
 			Parent = decompileBtn,
 		})
-		Icons.ApplyIcon(decompBtnIcon, "file-scan")
+		Icons.ApplyIcon(decompBtnIcon, "file-code")
 
 		Interface.New("TextLabel", {
 			BackgroundTransparency = 1,
@@ -3305,32 +3307,32 @@ local essentialTotal = 0
 local UNCCategories = {
 	{
 		Name = "Hooking",
-		Icon = "anchor",
+		Icon = "shield",
 		Functions = { "hookfunction", "hookmetamethod", "newcclosure", "iscclosure", "clonefunction", "getnamecallmethod" },
 	},
 	{
 		Name = "Instances",
-		Icon = "component",
+		Icon = "box",
 		Functions = { "cloneref", "gethui", "getinstances", "getnilinstances", "getconnections" },
 	},
 	{
 		Name = "Closures",
-		Icon = "braces",
+		Icon = "code",
 		Functions = { "checkcaller", "getcallingscript", "getscripts", "getgenv", "getrenv", "getrawmetatable" },
 	},
 	{
 		Name = "Actors / Parallel Luau",
-		Icon = "workflow",
+		Icon = "cpu",
 		Functions = { "getactors", "run_on_actor", "create_comm_channel" },
 	},
 	{
 		Name = "FFlags",
-		Icon = "toggle-left",
+		Icon = "flag",
 		Functions = { "getfflag", "setfflag" },
 	},
 	{
 		Name = "Misc",
-		Icon = "puzzle",
+		Icon = "wrench",
 		Functions = { "setclipboard", "request", "queue_on_teleport", "decompile" },
 	},
 }
@@ -3563,7 +3565,7 @@ local DiscordIcon = Interface.New("ImageLabel", {
 	ImageColor3 = Theme.Accent,
 	Parent = DiscordRow,
 })
-Icons.ApplyIcon(DiscordIcon, "message-square")
+Icons.ApplyIcon(DiscordIcon, "message-circle")
 
 local DiscordBtn = Interface.New("TextButton", {
 	Text = "Discord Server",
