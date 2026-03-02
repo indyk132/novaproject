@@ -136,7 +136,7 @@ local TitleIcon = Interface.New("ImageLabel", {
 	ImageColor3 = Theme.Accent,
 	Parent = TitleBar,
 })
-Icons.ApplyIcon(TitleIcon, "scan")
+Icons.ApplyIcon(TitleIcon, "radar")
 
 Interface.New("TextLabel", {
 	BackgroundTransparency = 1,
