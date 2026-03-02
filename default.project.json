@@ -1,0 +1,9 @@
+{
+	"name": "Nova",
+	"tree": {
+		"$className": "Folder",
+		"Src": {
+			"$path": "Src"
+		}
+	}
+}

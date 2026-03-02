@@ -1,0 +1,9 @@
+# Wax temp directories
+.wax-tmp/
+Distribution/.wax-tmp/
+
+# Rokit
+~/.rokit/
+
+# Build artifacts
+*.rbxm

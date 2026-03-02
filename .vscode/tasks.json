@@ -1,0 +1,14 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build Nova",
+			"type": "shell",
+			"command": "lune run Build bundle header=Build/Header.luau",
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			}
+		}
+	]
+}
